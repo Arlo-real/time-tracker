@@ -65,13 +65,15 @@ while True:
         else:
             if len(code) < 10:
                 code += str(keys[0])
-    if code == "" and (code != previouscode or previoustime != strftime("%d.%m.%Y %H:%M", localtime())):
+    
+    time= strftime("%d.%m.%Y %H:%M", localtime())
+    if code == "" and (code != previouscode or previoustime != time):
         lcd.lcd_clear()
-        lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 1)
+        lcd.lcd_string(time, 1)
         lcd.lcd_string("Enter code", 2)
-        print("printed time")
+        print("printed time: " + time)
     else:
         lcd.lcd_string(code, 1)
         sleep(0.1)
     previouscode=code
-    previoustime=strftime("%d.%m.%Y %H:%M", localtime())
+    previoustime=time
