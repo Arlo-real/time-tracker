@@ -19,7 +19,7 @@ text=""
 while True:
     keys = keypad.pressed_keys
     if len(keys) > 1:
-        continue #todo: error
+        continue #todo: handle error
 
     if keys:
         print("Pressed: ", keys)
