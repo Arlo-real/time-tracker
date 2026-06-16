@@ -66,6 +66,7 @@ while True:
             if len(code) < 10:
                 code += str(keys[0])
         if code=="":
+            print("Code is empty")
             lcd.lcd_clear()
             lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 1)
             lcd.lcd_string("Enter code", 2)
