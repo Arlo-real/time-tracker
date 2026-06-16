@@ -113,9 +113,25 @@ def handle_code(code: str):
     else:
         return check_in(code)
 
+def parse_date(s: str) -> str | None:
+    """Returns the date string if valid, None if not."""
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return s
+    except ValueError:
+        return None
+
 def export_csv(date_from: str, date_to: str, out_path: str):
     """Export a date range to CSV. Dates as 'YYYY-MM-DD'."""
     import csv
+
+    if not parse_date(date_from):
+        return {"ok": False, "msg": f"Invalid date_from: '{date_from}'. Use YYYY-MM-DD format."}
+    if not parse_date(date_to):
+        return {"ok": False, "msg": f"Invalid date_to: '{date_to}'. Use YYYY-MM-DD format."}
+    if date_from > date_to:
+        return {"ok": False, "msg": f"date_from ({date_from}) must be before date_to ({date_to})"}
+
     with get_conn() as conn:
         rows = conn.execute("""
             SELECT e.name, e.code, a.date, a.arrived_at, a.left_at,
@@ -131,4 +147,4 @@ def export_csv(date_from: str, date_to: str, out_path: str):
         writer.writerow(["Name", "Code", "Date", "Arrived", "Left", "Hours"])
         writer.writerows(rows)
 
-    return len(rows)
+    return {"ok": True, "msg": f"Exported {len(rows)} rows to {out_path}"}

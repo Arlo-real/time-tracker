@@ -20,12 +20,10 @@ lcd.lcd_string("testing internet", 1)
 lcd.lcd_string("connection", 2)
 
 if wait_timesync.wait_for_sync():
-    lcd.lcd_clear()
     lcd.lcd_string("time synced", 1)
     lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 2)
 
 else:
-    lcd.lcd_clear()
     lcd.lcd_string("time sync failed", 1)
     lcd.lcd_string("check connection", 2)
 
@@ -68,7 +66,6 @@ while True:
     
     time= strftime("%d.%m.%Y %H:%M", localtime())
     if code == "" and (code != previouscode or previoustime != time):
-        lcd.lcd_clear()
         lcd.lcd_string(time, 1)
         lcd.lcd_string("Enter code", 2)
     if code !="" and code != previouscode:
