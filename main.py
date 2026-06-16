@@ -34,7 +34,7 @@ sleep(1)
 db.init_db()
 code = ""
 previouscode=""
-previoustime=strftime("%d.%m.%Y %H:%M", localtime())
+previoustime=""
 
 while True:
     keys = keypad.pressed_keys
