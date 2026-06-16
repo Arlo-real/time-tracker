@@ -33,9 +33,11 @@ sleep(1)
 
 db.init_db()
 code = ""
-
+previouscode=""
+previoustime=strftime("%d.%m.%Y %H:%M", localtime())
 
 while True:
+    previouscode=code
     keys = keypad.pressed_keys
     if len(keys) > 1:
         continue #todo: handle error
@@ -64,7 +66,7 @@ while True:
         else:
             if len(code) < 10:
                 code += str(keys[0])
-    if code=="":
+    if (code != previouscode and code == "") or previoustime != strftime("%d.%m.%Y %H:%M", localtime()):
         lcd.lcd_clear()
         lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 1)
         lcd.lcd_string("Enter code", 2)
