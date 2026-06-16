@@ -37,7 +37,6 @@ previouscode=""
 previoustime=strftime("%d.%m.%Y %H:%M", localtime())
 
 while True:
-    previouscode=code
     keys = keypad.pressed_keys
     if len(keys) > 1:
         continue #todo: handle error
@@ -66,10 +65,12 @@ while True:
         else:
             if len(code) < 10:
                 code += str(keys[0])
-    if (code != previouscode and code == "") or previoustime != strftime("%d.%m.%Y %H:%M", localtime()):
+    if code == "" and (code != previouscode or previoustime != strftime("%d.%m.%Y %H:%M", localtime())):
         lcd.lcd_clear()
         lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 1)
         lcd.lcd_string("Enter code", 2)
     else:
         lcd.lcd_string(code, 1)
         sleep(0.1)
+    previouscode=code
+    previoustime=strftime("%d.%m.%Y %H:%M", localtime())
