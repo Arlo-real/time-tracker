@@ -39,7 +39,6 @@ while True:
     keys = keypad.pressed_keys
     if len(keys) > 1:
         continue #todo: handle error
-    print("In the loop...")
     if keys:
         print("Pressed: ", keys)
 
@@ -65,12 +64,10 @@ while True:
         else:
             if len(code) < 10:
                 code += str(keys[0])
-        if code=="":
-            print("Code is empty")
-            lcd.lcd_clear()
-            lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 1)
-            lcd.lcd_string("Enter code", 2)
-        else:
-            print("Code is not empty")
-            lcd.lcd_string(code, 1)
-            sleep(0.1)
+    if code=="":
+        lcd.lcd_clear()
+        lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 1)
+        lcd.lcd_string("Enter code", 2)
+    else:
+        lcd.lcd_string(code, 1)
+        sleep(0.1)
