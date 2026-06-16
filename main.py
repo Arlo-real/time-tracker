@@ -39,7 +39,7 @@ while True:
     keys = keypad.pressed_keys
     if len(keys) > 1:
         continue #todo: handle error
-
+    print("In the loop...")
     if keys:
         print("Pressed: ", keys)
 
