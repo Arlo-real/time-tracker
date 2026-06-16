@@ -27,3 +27,5 @@ else:
     lcd.lcd_clear()
     lcd.lcd_string("time sync failed", 1)
     lcd.lcd_string("check connection", 2)
+
+
