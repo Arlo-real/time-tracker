@@ -29,6 +29,7 @@ else:
     lcd.lcd_string("time sync failed", 1)
     lcd.lcd_string("check connection", 2)
 
+sleep(1)
 
 db.init_db()
 code = ""
@@ -64,3 +65,10 @@ while True:
         else:
             if len(code) < 10:
                 code += str(keys[0])
+        if code=="":
+            lcd.lcd_clear()
+            lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 1)
+            lcd.lcd_string("Enter code", 2)
+        else:
+            lcd.lcd_string(code, 1)
+            sleep(0.1)
