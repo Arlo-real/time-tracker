@@ -74,6 +74,5 @@ while True:
     if code !="" and code != previouscode:
         lcd.lcd_string(code, 1)
         lcd.lcd_string("", 2)
-        sleep(0.1)
     previouscode=code
     previoustime=time
