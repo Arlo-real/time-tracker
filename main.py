@@ -73,6 +73,7 @@ while True:
         sleep(3)
         lcd.lcd_string("Enter code", 2)
         print("printed time: " + time)
+        sleep(2)
     else:
         lcd.lcd_string(code, 1)
         sleep(0.1)
