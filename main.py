@@ -69,6 +69,7 @@ while True:
         lcd.lcd_clear()
         lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 1)
         lcd.lcd_string("Enter code", 2)
+        print("printed time")
     else:
         lcd.lcd_string(code, 1)
         sleep(0.1)
