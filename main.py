@@ -70,12 +70,10 @@ while True:
     if code == "" and (code != previouscode or previoustime != time):
         lcd.lcd_clear()
         lcd.lcd_string(time, 1)
-        sleep(3)
         lcd.lcd_string("Enter code", 2)
-        print("printed time: " + time)
-        sleep(2)
-    else:
+    if code !="" and code != previouscode:
         lcd.lcd_string(code, 1)
+        lcd.lcd_string("", 2)
         sleep(0.1)
     previouscode=code
     previoustime=time
