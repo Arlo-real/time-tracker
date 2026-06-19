@@ -44,11 +44,17 @@ while True:
         if str(keys[0]) == "#":
             lcd.lcd_clear()
             lcd.lcd_string("Processing code", 1)
-            result = db.handle_code(code)
+            result = db.handle_pin(code)
             if result["code"] == 0:
                 lcd.lcd_clear()
-                lcd.lcd_string(f"Hello, {result['name']}!", 1)  #TODO funny messages
-                lcd.lcd_string(f"Checked {result['inout']}", 2)
+                if result["inout"] == "in":
+                    lcd.lcd_string(f"Hello, {result['name']}!", 1)  #TODO funny messages
+                    lcd.lcd_string("Welcome", 2)
+                else:
+                    worked_s = result.get("worked_s") or 0
+                    h, m = divmod(worked_s // 60, 60)
+                    lcd.lcd_string(f"Bye, {result['name']}!", 1)
+                    lcd.lcd_string(f"Worked {h}:{m:02d}", 2)
                 sleep(1)
             elif result["code"] == 1:
                 lcd.lcd_clear()
