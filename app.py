@@ -249,7 +249,15 @@ def employees():
         elif action == "active":
             db.set_active(int(request.form["id"]), request.form.get("active") == "1")
         elif action == "chip":
-            db.learn_chip(int(request.form["id"]), request.form.get("serial", "").strip())
+            # manual entry: type a serial you already know
+            serial = request.form.get("serial", "").strip()
+            if serial:
+                db.learn_chip(int(request.form["id"]), serial)
+        elif action == "enroll":
+            # arm the scan station to link the next unassigned chip scanned
+            db.request_enroll(int(request.form["id"]))
+        elif action == "cancel_enroll":
+            db.cancel_enroll()
         elif action == "unchip":
             db.forget_chip(request.form.get("serial", "").strip())
         return redirect(url_for("employees"))
@@ -260,6 +268,8 @@ def employees():
                     for e in emps}
     return render_template("employees.html", employees=emps, chips=chips,
                            month_totals=month_totals,
+                           pending_enroll=db.get_pending_enroll(),
+                           enroll_window=db.ENROLL_WINDOW_SECONDS,
                            month_label=f"{MONTH_NAMES[today.month]} {today.year}")
 
 

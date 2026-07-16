@@ -50,6 +50,16 @@ def _clock_watchdog():
 
 def handle(serial):
     """Record one scan and sound the matching buzzer feedback."""
+    # Enrollment first, and deliberately not behind the clock gate: linking a
+    # chip stores no timestamp, so an unsynced clock is no reason to block it.
+    # Returns None unless enrollment is armed AND this chip is unassigned, so
+    # normal punches are unaffected while a colleague is being enrolled.
+    enrolled = db.try_enroll_scan(serial)
+    if enrolled is not None:
+        print(f"[main] enrolled chip {serial!r} -> {enrolled.name}", flush=True)
+        buzzer.beep_enrolled()
+        return
+
     if not _clock_ok.is_set():
         # Untrusted clock: storing this punch would mean a wrong timestamp, so
         # drop it and make sure whoever scanned can hear that it didn't count.

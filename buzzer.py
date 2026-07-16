@@ -9,6 +9,7 @@ Distinct patterns so the sound alone tells the employee what happened:
   * clock IN    -> two short rising beeps  (ok, you're in)
   * clock OUT   -> two short falling beeps  (ok, you're out)
   * duplicate   -> one short neutral blip  (already scanned, nothing stored)
+  * enrolled    -> three quick rising blips  (chip linked to an employee)
   * error       -> one long low buzz  (unknown chip / failure)
   * alarm       -> three long low buzzes  (clock not trusted, nothing recorded)
 """
@@ -98,6 +99,12 @@ def beep_duplicate():
     _play([(1000, 0.08)])
 
 
+def beep_enrolled():
+    """Chip linked to an employee: three quick rising blips. Clearly different
+    from a punch, so nobody mistakes enrolling for clocking in."""
+    _play([(784, 0.09), (0, 0.04), (988, 0.09), (0, 0.04), (1319, 0.14)])
+
+
 def beep_error():
     """Something went wrong: one long low buzz."""
     _play([(220, 0.6)])
@@ -113,8 +120,9 @@ def beep_alarm():
 if __name__ == "__main__":
     # Quick manual test: play each pattern with a gap between.
     from time import sleep
-    print("IN...");    beep_in();        sleep(0.5)
-    print("OUT...");   beep_out();       sleep(0.5)
-    print("DUP...");   beep_duplicate(); sleep(0.5)
-    print("ERROR..."); beep_error();     sleep(0.5)
-    print("ALARM..."); beep_alarm()
+    print("IN...");       beep_in();        sleep(0.5)
+    print("OUT...");      beep_out();       sleep(0.5)
+    print("DUP...");      beep_duplicate(); sleep(0.5)
+    print("ENROLLED..."); beep_enrolled();  sleep(0.5)
+    print("ERROR...");    beep_error();     sleep(0.5)
+    print("ALARM...");    beep_alarm()

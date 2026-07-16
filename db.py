@@ -78,6 +78,14 @@ def init_db():
                 employee_id INTEGER NOT NULL REFERENCES employees(id),
                 serial      TEXT NOT NULL UNIQUE
             );
+            -- Armed chip enrollment. The admin site inserts a row here; the
+            -- scan station links the next *unassigned* chip scanned before
+            -- expires_at to this employee, then deletes the row. At most one
+            -- request exists at a time (see request_enroll).
+            CREATE TABLE IF NOT EXISTS enroll_requests (
+                employee_id INTEGER NOT NULL REFERENCES employees(id),
+                expires_at  TEXT NOT NULL   -- 'YYYY-MM-DD HH:MM:SS'
+            );
             CREATE TABLE IF NOT EXISTS punches (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 employee_id INTEGER NOT NULL REFERENCES employees(id),
@@ -215,7 +223,9 @@ def add_employee(name: str) -> int:
 
 
 def learn_chip(employee_id: int, serial: str) -> None:
-    """Link an NFC chip serial to an employee. Re-assigns if already known."""
+    """Link an NFC chip serial to an employee by hand. Re-assigns if already
+    known. This is the manual escape hatch; see request_enroll for the
+    scan-to-link flow."""
     serial = _norm_serial(serial)
     with get_conn() as conn:
         conn.execute(
@@ -223,6 +233,83 @@ def learn_chip(employee_id: int, serial: str) -> None:
             " ON CONFLICT(serial) DO UPDATE SET employee_id=excluded.employee_id",
             (employee_id, serial),
         )
+
+
+# ── scan-to-link enrollment ───────────────────────────────────────────────────
+#
+# The scan station grabs the reader exclusively, so a chip can never be scanned
+# into a browser field. Instead the admin site *arms* enrollment for an employee
+# and the station links the next unassigned chip it sees. The two processes are
+# separate, so the request lives in the DB rather than in memory.
+
+ENROLL_WINDOW_SECONDS = 120
+
+# status : "enrolled"
+# name   : employee the chip was linked to
+EnrollResult = namedtuple("EnrollResult", "status employee_id name serial")
+
+
+def request_enroll(employee_id: int, window: int = ENROLL_WINDOW_SECONDS) -> str:
+    """Arm enrollment for one employee. Only one request exists at a time, so
+    arming for someone else simply replaces the previous one. Returns the
+    expiry timestamp."""
+    expires = _now() + timedelta(seconds=window)
+    with get_conn() as conn:
+        conn.execute("DELETE FROM enroll_requests")
+        conn.execute(
+            "INSERT INTO enroll_requests (employee_id, expires_at) VALUES (?,?)",
+            (employee_id, expires.strftime(TS_FMT)),
+        )
+    return expires.strftime(TS_FMT)
+
+
+def cancel_enroll() -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM enroll_requests")
+
+
+def get_pending_enroll():
+    """The armed request (employee_id, name, expires_at) if one is still live,
+    else None. Expired requests are treated as absent."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT r.employee_id, r.expires_at, e.name FROM enroll_requests r"
+            " JOIN employees e ON e.id = r.employee_id LIMIT 1"
+        ).fetchone()
+    if row is None or datetime.strptime(row["expires_at"], TS_FMT) <= _now():
+        return None
+    return row
+
+
+def try_enroll_scan(serial: str):
+    """Consume an armed enrollment with this scan, if it applies.
+
+    Returns an EnrollResult when the chip was linked, or None when the caller
+    should treat the scan as an ordinary punch -- i.e. when nothing is armed,
+    the window has expired, or the chip already belongs to someone. Keeping
+    already-assigned chips on the punch path means people can still clock in
+    and out normally while enrollment is armed for a colleague.
+
+    Look-up, insert and disarm happen in one transaction so two scans racing
+    the same request cannot both be enrolled.
+    """
+    serial = _norm_serial(serial)
+    with get_conn() as conn:
+        req = conn.execute(
+            "SELECT r.employee_id, r.expires_at, e.name FROM enroll_requests r"
+            " JOIN employees e ON e.id = r.employee_id LIMIT 1"
+        ).fetchone()
+        if req is None:
+            return None
+        if datetime.strptime(req["expires_at"], TS_FMT) <= _now():
+            conn.execute("DELETE FROM enroll_requests")  # expired: tidy up
+            return None
+        if conn.execute("SELECT 1 FROM chips WHERE serial=?", (serial,)).fetchone():
+            return None  # already someone's chip -> normal punch
+        conn.execute("INSERT INTO chips (employee_id, serial) VALUES (?,?)",
+                     (req["employee_id"], serial))
+        conn.execute("DELETE FROM enroll_requests")
+    return EnrollResult("enrolled", req["employee_id"], req["name"], serial)
 
 
 def forget_chip(serial: str) -> None:

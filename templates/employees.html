@@ -45,10 +45,28 @@
           <button class="danger" type="submit">✕</button>
         </form><br>
       {% endfor %}
-      <form method="post" style="display:inline-flex;gap:6px;">
+      {% if pending_enroll and pending_enroll['employee_id'] == e['id'] %}
+        <div class="pill" style="margin:4px 0;">
+          Waiting for a scan… tap an <strong>unassigned</strong> chip on the reader
+        </div>
+        <form method="post" style="display:inline-flex;gap:6px;">
+          <input type="hidden" name="action" value="cancel_enroll">
+          <button class="ghost" type="submit">Cancel</button>
+        </form>
+      {% else %}
+        <form method="post" style="display:inline-flex;gap:6px;">
+          <input type="hidden" name="action" value="enroll">
+          <input type="hidden" name="id" value="{{ e['id'] }}">
+          <button type="submit"
+                  title="Then tap a new chip on the reader within {{ enroll_window // 60 }} minutes">
+            Scan to link
+          </button>
+        </form>
+      {% endif %}
+      <form method="post" style="display:inline-flex;gap:6px;margin-top:4px;">
         <input type="hidden" name="action" value="chip">
         <input type="hidden" name="id" value="{{ e['id'] }}">
-        <input name="serial" placeholder="chip serial/UID" size="14">
+        <input name="serial" placeholder="or type serial/UID" size="14">
         <button class="ghost" type="submit">Link chip</button>
       </form>
     </div>
