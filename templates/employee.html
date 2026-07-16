@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Time Tracker{% endblock %}
+{% block title %}{{ emp['name'] }} · {{ MONTH_NAMES[month] }} {{ year }}{% endblock %}
 {% block body %}
 {% set t = summary.totals %}
 
