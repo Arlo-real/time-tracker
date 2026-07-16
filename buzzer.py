@@ -61,6 +61,10 @@ def _play(segments):
     """Play a sequence of tones, blocking until done. Never raises: audio
     feedback must not take the scan station down."""
     wav = _build_wav(segments)
+    # Hard timeout: this runs in the scan loop, so aplay blocking on a busy or
+    # misrouted audio device must never wedge the station. A few seconds is far
+    # longer than any pattern here (longest is the ~1.6s alarm).
+    budget = sum(seconds for _, seconds in segments) + 3.0
     try:
         subprocess.run(
             ["aplay", "-q"],
@@ -68,7 +72,11 @@ def _play(segments):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            timeout=budget,
         )
+    except subprocess.TimeoutExpired:
+        print("[buzzer] aplay timed out; check audio routing (HDMI vs jack)",
+              file=sys.stderr)
     except FileNotFoundError:
         print("[buzzer] aplay not found (install alsa-utils)", file=sys.stderr)
     except Exception as e:
