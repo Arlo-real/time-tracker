@@ -58,6 +58,11 @@ def handle(serial):
         return
 
     res = db.record_scan(serial)
+    # Log every scan: the buzzer is the only other feedback, so without this an
+    # unrecognised chip fails completely silently and there is nothing to debug.
+    detail = f" ({res.name}, {res.direction})" if res.status == "recorded" else ""
+    print(f"[main] scan {serial!r} -> {res.status}{detail}", flush=True)
+
     if res.status == "recorded":
         # direction is decided by db.record_scan in the same transaction as the
         # insert, so it always matches the stored punch.
