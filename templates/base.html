@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Time Tracker{% endblock %}</title>
+<style>
+  :root {
+    --bg:#f4f5f7; --card:#fff; --line:#dde1e6; --ink:#1c2430; --muted:#6b7580;
+    --accent:#2f6fed; --work:#2f6fed; --sick:#e0662b; --vac:#2ca86a;
+    --holiday:#8a63d2; --closed:#8894a4; --off:#eef0f3; --bad:#d23b3b;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.45 system-ui,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { background:var(--card); border-bottom:1px solid var(--line);
+           padding:10px 18px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+  header a.brand { font-weight:700; text-decoration:none; color:var(--ink); font-size:16px; }
+  header nav a { text-decoration:none; color:var(--muted); margin-right:14px; }
+  header nav a:hover { color:var(--accent); }
+  header .spacer { flex:1; }
+  main { max-width:1080px; margin:20px auto; padding:0 18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:18px; margin-bottom:18px; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:16px; margin:0 0 12px; }
+  table { border-collapse:collapse; width:100%; }
+  th,td { text-align:left; padding:6px 9px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; font-size:13px; }
+  .table-scroll { overflow-x:auto; }
+  /* calendar: fixed layout so 7 columns always fit the card width */
+  table.cal { table-layout:fixed; }
+  table.cal th { font-size:12px; text-align:center; }
+  table.cal td { width:14.2857%; vertical-align:top; padding:4px 5px; height:62px;
+                 overflow:hidden; }
+  table.cal .dnum { font-weight:700; }
+  table.cal .sub { font-size:11px; }
+  table.cal .pill { font-size:10px; padding:0 5px; }
+  button, .btn { background:var(--accent); color:#fff; border:0; border-radius:7px;
+          padding:7px 13px; font-size:14px; cursor:pointer; text-decoration:none; display:inline-block; }
+  button.ghost, .btn.ghost { background:#eef0f3; color:var(--ink); }
+  button.danger { background:var(--bad); }
+  input,select { font:inherit; padding:6px 8px; border:1px solid var(--line);
+          border-radius:6px; background:#fff; }
+  label.chk { display:inline-flex; align-items:center; gap:4px; margin-right:8px; }
+  .flash { padding:9px 13px; border-radius:8px; margin-bottom:12px; }
+  .flash.error { background:#fde8e8; color:#8a1f1f; }
+  .flash.ok { background:#e5f6ec; color:#1c6b3f; }
+  .muted { color:var(--muted); } .right { text-align:right; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:20px; font-size:12px; color:#fff; }
+  .pill.work{background:var(--work)} .pill.sick{background:var(--sick)}
+  .pill.vacation{background:var(--vac)} .pill.holiday{background:var(--holiday)}
+  .pill.closed{background:var(--closed)} .pill.off{background:#c3cad4}
+  .grid { display:flex; gap:18px; flex-wrap:wrap; }
+  .grid > .card { flex:1; min-width:260px; }
+</style>
+</head>
+<body>
+{% if session.get('admin') %}
+<header>
+  <a class="brand" href="{{ url_for('index') }}">⏱ Time Tracker</a>
+  <nav>
+    <a href="{{ url_for('index') }}">Employees view</a>
+    <a href="{{ url_for('employees') }}">Manage people</a>
+    <a href="{{ url_for('special_days') }}">Holidays / closures</a>
+    <a href="{{ url_for('export_page') }}">Export</a>
+    <a href="{{ url_for('settings') }}">Settings</a>
+  </nav>
+  <span class="spacer"></span>
+  <a class="btn ghost" href="{{ url_for('logout') }}">Log out</a>
+</header>
+{% endif %}
+<main>
+  {% with msgs = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in msgs %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
+  {% endwith %}
+  {% block body %}{% endblock %}
+</main>
+</body>
+</html>

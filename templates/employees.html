@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Manage people{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Employees</h1>
+  <form method="post" style="display:flex;gap:8px;">
+    <input type="hidden" name="action" value="add">
+    <input name="name" placeholder="New employee name" required style="flex:1;">
+    <button type="submit">Add employee</button>
+  </form>
+</div>
+
+{% for e in employees %}
+<div class="card">
+  <div style="display:flex;align-items:center;gap:10px;">
+    <form method="post" style="display:inline-flex;gap:6px;">
+      <input type="hidden" name="action" value="rename">
+      <input type="hidden" name="id" value="{{ e['id'] }}">
+      <input name="name" value="{{ e['name'] }}">
+      <button class="ghost" type="submit">Rename</button>
+    </form>
+    {% if not e['active'] %}<span class="pill off">inactive</span>{% endif %}
+    <span class="spacer" style="flex:1;"></span>
+    {% set mt = month_totals[e['id']] %}
+    <span class="muted" title="worked / planned this month">
+      {{ month_label }}:
+      <strong style="color:{{ 'var(--vac)' if mt.balance_s>=0 else 'var(--bad)' }}">{{ mt.worked_s|hm }}</strong>
+      / {{ mt.supposed_s|hm }} h</span>
+    <form method="post">
+      <input type="hidden" name="action" value="active">
+      <input type="hidden" name="id" value="{{ e['id'] }}">
+      <input type="hidden" name="active" value="{{ 0 if e['active'] else 1 }}">
+      <button class="ghost" type="submit">{{ 'Deactivate' if e['active'] else 'Reactivate' }}</button>
+    </form>
+  </div>
+
+  <div class="grid" style="margin-top:12px;">
+    <div>
+      <div class="muted">NFC chips</div>
+      {% for c in chips[e['id']] %}
+        <form method="post" style="display:inline-flex;gap:4px;margin:2px 0;">
+          <input type="hidden" name="action" value="unchip">
+          <input type="hidden" name="serial" value="{{ c['serial'] }}">
+          <code>{{ c['serial'] }}</code>
+          <button class="danger" type="submit">✕</button>
+        </form><br>
+      {% endfor %}
+      <form method="post" style="display:inline-flex;gap:6px;">
+        <input type="hidden" name="action" value="chip">
+        <input type="hidden" name="id" value="{{ e['id'] }}">
+        <input name="serial" placeholder="chip serial/UID" size="14">
+        <button class="ghost" type="submit">Link chip</button>
+      </form>
+    </div>
+    <div class="right" style="align-self:end;">
+      <a class="btn" href="{{ url_for('employee_view', employee_id=e['id']) }}">View month →</a>
+    </div>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

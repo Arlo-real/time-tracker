@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}{{ emp['name'] }} · {{ MONTH_NAMES[month] }} {{ year }}{% endblock %}
+{% block body %}
+{% set t = summary.totals %}
+
+<div class="card">
+  <div class="grid" style="align-items:center;">
+    <form method="get" action="{{ url_for('index') }}" style="margin:0;">
+      <label class="muted">Employee</label><br>
+      <select name="emp" onchange="location.href='/employee/'+this.value+'?year={{year}}&month={{month}}'">
+        {% for e in employees %}
+        <option value="{{ e['id'] }}" {{ 'selected' if e['id']==emp['id'] }}>{{ e['name'] }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <div class="right" style="flex:1;">
+      <a class="btn ghost" href="?year={{prev_y}}&month={{prev_m}}">← Prev</a>
+      <strong style="margin:0 10px;">{{ MONTH_NAMES[month] }} {{ year }}</strong>
+      <a class="btn ghost" href="?year={{next_y}}&month={{next_m}}">Next →</a>
+    </div>
+  </div>
+  {% if not summary.configured %}
+  <p class="flash error" style="margin-top:12px;">No monthly target set for this month yet — hours below assume 0. Set it under “Monthly target”.</p>
+  {% endif %}
+</div>
+
+<!-- monthly summary -->
+<div class="card">
+  <h2>Summary — {{ MONTH_NAMES[month] }} {{ year }}</h2>
+  <div class="grid">
+    <div><div class="muted">Worked</div><strong>{{ t.worked_s|hm }}</strong>
+         <div class="muted">{{ t.worked_days }} days</div></div>
+    <div><div class="muted">Supposed</div><strong>{{ t.supposed_s|hm }}</strong>
+         <div class="muted">{{ t.supposed_days }} days</div></div>
+    <div><div class="muted">Vacation (credited)</div><strong>{{ t.vacation_s|hm }}</strong>
+         <div class="muted">{{ t.vacation_days }} days</div></div>
+    <div><div class="muted">Sick</div><strong>{{ t.sick_s|hm }}</strong>
+         <div class="muted">{{ t.sick_days }} days</div></div>
+    <div><div class="muted">Holiday / closed</div>
+         <strong>{{ t.holiday_days }} / {{ t.closed_days }}</strong>
+         <div class="muted">days off</div></div>
+    <div><div class="muted">Balance (worked+vac − supposed)</div>
+         <strong style="color:{{ 'var(--vac)' if t.balance_s>=0 else 'var(--bad)' }}">{{ t.balance_s|hm }}</strong></div>
+  </div>
+</div>
+
+<!-- calendar -->
+<div class="card">
+  <h2>Calendar</h2>
+  <table class="cal">
+    <thead><tr>{% for i,name in WEEKDAYS %}<th>{{ name }}</th>{% endfor %}</tr></thead>
+    <tbody>
+    {% for week in weeks %}
+      <tr>
+      {% for cell in week %}
+        {% if cell is none %}
+          <td style="background:var(--off);"></td>
+        {% else %}
+          {% set day = cell.date[8:10]|int %}
+          <td>
+            <div><a href="{{ url_for('day_view', employee_id=emp['id'], day=cell.date) }}"
+                    style="text-decoration:none;color:var(--ink);"><span class="dnum">{{ day }}</span></a>
+                 {% if cell.category != 'work' and cell.category != 'off' %}
+                 <span class="pill {{ cell.category }}">{{ cell.category }}</span>{% endif %}</div>
+            {% if cell.worked_s or cell.supposed_s %}
+              <div class="muted sub">
+                {{ cell.worked_s|hm }}{% if cell.supposed_s %} / {{ cell.supposed_s|hm }}{% endif %}
+              </div>
+            {% endif %}
+            {% if cell.incomplete %}<div class="sub" style="color:var(--bad);">no out</div>{% endif %}
+          </td>
+        {% endif %}
+      {% endfor %}
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="font-size:12px;margin-top:8px;">
+    worked / supposed hours. Click a day number to edit punches &amp; absence.</p>
+</div>
+
+<!-- per-day breakdown -->
+<div class="card">
+  <div style="display:flex;align-items:center;gap:10px;">
+    <h2 style="margin:0;">Daily breakdown</h2>
+    <span style="flex:1;"></span>
+    <a class="btn ghost" href="{{ url_for('export_employee_month', employee_id=emp['id'], year=year, month=month) }}">Download detailed CSV</a>
+  </div>
+  <div class="table-scroll" style="margin-top:12px;">
+  <table>
+    <thead><tr><th>Date</th><th>Day</th><th>Type</th><th>In</th><th>Out</th>
+      <th class="right">Pause</th><th class="right">Worked</th>
+      <th class="right">Supposed</th><th>Via</th><th></th></tr></thead>
+    <tbody>
+    {% for r in summary.rows %}
+      <tr {% if r.category == 'off' %}style="background:var(--off);"{% endif %}>
+        <td>{{ r.date[8:10] }}.{{ r.date[5:7] }}</td>
+        <td class="muted">{{ r.weekday }}</td>
+        <td>{% if r.category != 'off' %}<span class="pill {{ r.category }}">{{ r.category }}</span>{% endif %}
+            {% if r.note %}<span class="muted">{{ r.note }}</span>{% endif %}</td>
+        <td>{{ r.in_time }}</td>
+        <td>{{ r.out_time }}{% if r.incomplete %}<span style="color:var(--bad)"> ⚠</span>{% endif %}</td>
+        <td class="right">{{ r.pause_s|hm if r.pause_s else '' }}</td>
+        <td class="right">{{ r.worked_s|hm if r.worked_s else '' }}</td>
+        <td class="right">{{ r.supposed_s|hm if r.supposed_s else '' }}</td>
+        <td class="muted">{{ r.methods|join(', ') }}</td>
+        <td><a href="{{ url_for('day_view', employee_id=emp['id'], day=r.date) }}">edit</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="grid">
+  <!-- monthly target -->
+  <div class="card">
+    <h2>Monthly target — {{ MONTH_NAMES[month] }} {{ year }}</h2>
+    <form method="post" action="{{ url_for('set_target', employee_id=emp['id'], year=year, month=month) }}">
+      <p><label>Target hours this month<br>
+        <input name="target_hours" type="number" step="0.5" min="0"
+               value="{{ '%g'|format(summary.target_hours) }}"></label></p>
+      <p>Workdays:<br>
+      {% for i,name in WEEKDAYS %}
+        <label class="chk"><input type="checkbox" name="workdays" value="{{ i }}"
+          {{ 'checked' if i in summary.workdays }}> {{ name }}</label>
+      {% endfor %}</p>
+      <p class="muted" style="font-size:13px;">
+        {{ summary.scheduled_workdays }} workdays → {{ summary.per_day_s|hm }} per day.
+        Holidays, closures & sick days are removed from that.</p>
+      <button type="submit">Save target</button>
+    </form>
+  </div>
+
+  <!-- bulk absence -->
+  <div class="card">
+    <h2>Add sick / vacation days</h2>
+    <form method="post" action="{{ url_for('set_absence_range', employee_id=emp['id'], year=year, month=month) }}">
+      <p style="display:flex;gap:8px;flex-wrap:wrap;">
+        <label>From<br><input name="start" type="date" required></label>
+        <label>To<br><input name="end" type="date"></label>
+      </p>
+      <p>
+        <label class="chk"><input type="radio" name="kind" value="vacation" checked> Vacation</label>
+        <label class="chk"><input type="radio" name="kind" value="sick"> Sick</label>
+        <label class="chk"><input type="radio" name="kind" value="none"> Clear</label>
+      </p>
+      <p><input name="note" placeholder="note (optional)" style="width:100%"></p>
+      <button type="submit">Apply to range</button>
+      <p class="muted" style="font-size:13px;">Leave “To” empty for a single day.
+        Applies to every day in the range; non-workdays just don't add hours.</p>
+    </form>
+  </div>
+
+  <!-- chips -->
+  <div class="card">
+    <h2>NFC chips</h2>
+    {% if chips %}
+    <ul>{% for c in chips %}<li><code>{{ c['serial'] }}</code></li>{% endfor %}</ul>
+    {% else %}<p class="muted">No chip linked. Add one under “Manage people”.</p>{% endif %}
+    <p class="muted" style="font-size:13px;">Chip enrollment is on the
+      <a href="{{ url_for('employees') }}">Manage people</a> page.</p>
+  </div>
+</div>
+{% endblock %}

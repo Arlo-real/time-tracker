@@ -1,81 +1,101 @@
-from time import localtime, sleep, strftime
-import board
-import digitalio
-import adafruit_matrixkeypad
+"""Time-tracker scan station.
 
-import wait_timesync
-import lcd
+Reads chip UUIDs from the keyboard-emulation NFC reader (see reader.py) and
+records a punch for the matching employee. Feedback is audible only: a buzzer
+plugged into the 3.5mm audio jack beeps one way on clock-in, another on
+clock-out, a short blip on a duplicate, and a low buzz on error (see buzzer.py).
+There is no display or keypad.
+
+The clock is a hard requirement: a punch is only worth storing if its timestamp
+is right, and a Pi has no battery-backed RTC, so after a power cut its clock can
+be plausibly-but-badly wrong until NTP lands. While the clock is not synced we
+refuse to record anything and sound the alarm pattern on every scan; a
+background thread keeps re-checking and recording resumes by itself once the
+clock is trusted again.
+
+Run:  python3 main.py   (set READER_MODE/READER_DEVICE env vars as needed)
+"""
+
+import threading
+import time
+
+import buzzer
 import db
+import reader
+import wait_timesync
+
+# How often the background thread re-checks the clock.
+CLOCK_CHECK_SECONDS = 15
+
+# Set only while the system clock is NTP-synced. Nothing is recorded unless set.
+_clock_ok = threading.Event()
 
 
-cols = [digitalio.DigitalInOut(x) for x in (board.D10, board.D9, board.D11, board.D5)] # cols in order (left to right)
-rows = [digitalio.DigitalInOut(x) for x in (board.D4, board.D17, board.D27, board.D22)] # rows in order (up to down)
+def _clock_watchdog():
+    """Re-check the clock forever, flipping _clock_ok. Never dies: a dead
+    watchdog would leave the station refusing punches with no way back."""
+    while True:
+        try:
+            synced = wait_timesync.is_time_synchronized()
+            if synced and not _clock_ok.is_set():
+                _clock_ok.set()
+                print("[main] clock synced; recording enabled", flush=True)
+            elif not synced and _clock_ok.is_set():
+                _clock_ok.clear()
+                print("[main] clock lost sync; recording disabled", flush=True)
+        except Exception as e:
+            print(f"[main] clock check failed: {e}", flush=True)
+        time.sleep(CLOCK_CHECK_SECONDS)
 
-keys = ((1, 2, 3, "A"), (4, 5, 6, "B"), (7, 8, 9, "C"), ("*", 0, "#", "D"))
 
-keypad = adafruit_matrixkeypad.Matrix_Keypad(rows, cols, keys)
+def handle(serial):
+    """Record one scan and sound the matching buzzer feedback."""
+    if not _clock_ok.is_set():
+        # Untrusted clock: storing this punch would mean a wrong timestamp, so
+        # drop it and make sure whoever scanned can hear that it didn't count.
+        print(f"[main] clock not synced; refused scan {serial!r}", flush=True)
+        buzzer.beep_alarm()
+        return
 
-lcd.setup()
-lcd.lcd_string("testing internet", 1)
-lcd.lcd_string("connection", 2)
+    res = db.record_scan(serial)
+    if res.status == "recorded":
+        # direction is decided by db.record_scan in the same transaction as the
+        # insert, so it always matches the stored punch.
+        buzzer.beep_in() if res.direction == "in" else buzzer.beep_out()
+    elif res.status == "ignored_duplicate":
+        buzzer.beep_duplicate()
+    else:  # unknown_chip or any unexpected status
+        buzzer.beep_error()
 
-if wait_timesync.wait_for_sync():
-    lcd.lcd_string("time synced", 1)
-    lcd.lcd_string(strftime("%d.%m.%Y %H:%M", localtime()), 2)
 
-else:
-    lcd.lcd_string("time sync failed", 1)
-    lcd.lcd_string("check connection", 2)
+def main():
+    db.init_db()
 
-sleep(1)
+    if wait_timesync.wait_for_sync():
+        _clock_ok.set()
+    else:
+        print("[main] time sync failed; refusing to record until the clock "
+              "is trusted", flush=True)
+        buzzer.beep_alarm()
 
-db.init_db()
-code = ""
-previouscode=""
-previoustime=""
+    threading.Thread(target=_clock_watchdog, daemon=True).start()
+    print("[main] scan station ready", flush=True)
 
-while True:
-    keys = keypad.pressed_keys
-    if len(keys) > 1:
-        continue #todo: handle error
-    if keys:
-        print("Pressed: ", keys)
+    for serial in reader.read_uuids():
+        # One bad scan (e.g. a transient DB lock) must not take the station
+        # down: log it, buzz an error, and keep reading.
+        try:
+            handle(serial)
+        except Exception as e:
+            print(f"[main] scan error for {serial!r}: {e}", flush=True)
+            try:
+                buzzer.beep_error()
+            except Exception:
+                pass
 
-        if str(keys[0]) == "#":
-            lcd.lcd_clear()
-            lcd.lcd_string("Processing code", 1)
-            result = db.handle_pin(code)
-            if result["code"] == 0:
-                lcd.lcd_clear()
-                if result["inout"] == "in":
-                    lcd.lcd_string(f"Hello, {result['name']}!", 1)  #TODO funny messages
-                    lcd.lcd_string("Welcome", 2)
-                else:
-                    worked_s = result.get("worked_s") or 0
-                    h, m = divmod(worked_s // 60, 60)
-                    lcd.lcd_string(f"Bye, {result['name']}!", 1)
-                    lcd.lcd_string(f"Worked {h}:{m:02d}", 2)
-                sleep(1)
-            elif result["code"] == 1:
-                lcd.lcd_clear()
-                lcd.lcd_string(result["msg"], 1)
-                sleep(1)
-            else:
-                lcd.lcd_clear()
-                lcd.lcd_string("unknown error", 1)
-        elif str(keys[0]) == "*":
-            code=code[:-1]
 
-        else:
-            if len(code) < 10:
-                code += str(keys[0])
-    
-    time= strftime("%d.%m.%Y %H:%M", localtime())
-    if code == "" and (code != previouscode or previoustime != time):
-        lcd.lcd_string(time, 1)
-        lcd.lcd_string("Enter code", 2)
-    if code !="" and code != previouscode:
-        lcd.lcd_string(code, 1)
-        lcd.lcd_string("", 2)
-    previouscode=code
-    previoustime=time
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

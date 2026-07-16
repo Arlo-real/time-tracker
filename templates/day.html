@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ emp['name'] }} · {{ day }}{% endblock %}
+{% block body %}
+<div class="card">
+  <a class="muted" href="{{ url_for('employee_view', employee_id=emp['id'], year=d.year, month=d.month) }}">← back to month</a>
+  <h1>{{ emp['name'] }} — {{ day }}</h1>
+</div>
+
+<div class="grid">
+  <!-- punches -->
+  <div class="card">
+    <h2>Scan times</h2>
+    <p class="muted" style="font-size:13px;">Punches pair as in / out / in / out…</p>
+    <table>
+      <thead><tr><th>#</th><th>Time</th><th>Via</th><th></th></tr></thead>
+      <tbody>
+      {% for p in punches %}
+        <tr>
+          <td>{{ loop.index }} · {{ 'in' if loop.index0 % 2 == 0 else 'out' }}</td>
+          <td>
+            <form method="post" action="{{ url_for('punch_edit', employee_id=emp['id'], day=day) }}"
+                  style="display:inline-flex;gap:6px;">
+              <input type="hidden" name="action" value="update">
+              <input type="hidden" name="punch_id" value="{{ p['id'] }}">
+              <input name="time" value="{{ p['punched_at'][11:16] }}" size="5">
+              <button class="ghost" type="submit">save</button>
+            </form>
+          </td>
+          <td class="muted">{{ p['method'] }}</td>
+          <td>
+            <form method="post" action="{{ url_for('punch_edit', employee_id=emp['id'], day=day) }}">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="punch_id" value="{{ p['id'] }}">
+              <button class="danger" type="submit">✕</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">No punches this day.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <form method="post" action="{{ url_for('punch_edit', employee_id=emp['id'], day=day) }}"
+          style="margin-top:10px;display:inline-flex;gap:6px;">
+      <input type="hidden" name="action" value="add">
+      <input name="time" placeholder="HH:MM" size="6">
+      <button type="submit">Add punch</button>
+    </form>
+  </div>
+
+  <!-- absence -->
+  <div class="card">
+    <h2>Absence</h2>
+    <form method="post" action="{{ url_for('set_absence', employee_id=emp['id'], year=d.year, month=d.month) }}">
+      <input type="hidden" name="date" value="{{ day }}">
+      <p>
+        <label class="chk"><input type="radio" name="kind" value="none"
+          {{ 'checked' if not absence }}> Present</label>
+        <label class="chk"><input type="radio" name="kind" value="sick"
+          {{ 'checked' if absence and absence['kind']=='sick' }}> Sick</label>
+        <label class="chk"><input type="radio" name="kind" value="vacation"
+          {{ 'checked' if absence and absence['kind']=='vacation' }}> Vacation</label>
+      </p>
+      <p><input name="note" placeholder="note (optional)"
+                value="{{ absence['note'] if absence else '' }}" style="width:100%"></p>
+      <button type="submit">Save absence</button>
+    </form>
+    <p class="muted" style="font-size:13px;margin-top:10px;">
+      Sick removes the day's supposed hours and adds them to the sick total.
+      Vacation counts as fulfilled toward the target.</p>
+  </div>
+</div>
+{% endblock %}

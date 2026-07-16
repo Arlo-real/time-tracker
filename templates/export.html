@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Export{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Export</h1>
+  <p class="muted">CSV of the monthly summary for <strong>all employees</strong>
+    (one row per employee per month). Opens in any spreadsheet.</p>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>One month</h2>
+    <form method="get" action="{{ url_for('export_month') }}">
+      <p style="display:flex;gap:8px;">
+        <label>Month<br>
+          <select name="month">
+            {% for m in range(1,13) %}
+            <option value="{{ m }}" {{ 'selected' if m==this_month }}>{{ MONTH_NAMES[m] }}</option>
+            {% endfor %}
+          </select></label>
+        <label>Year<br><input name="year" type="number" value="{{ this_year }}" style="width:90px"></label>
+      </p>
+      <button type="submit">Download month CSV</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Whole year</h2>
+    <form method="get" action="{{ url_for('export_year') }}">
+      <p><label>Year<br><input name="year" type="number" value="{{ this_year }}" style="width:90px"></label></p>
+      <button type="submit">Download year CSV</button>
+      <p class="muted" style="font-size:13px;">All 12 months for every employee.</p>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h1>Detailed — one CSV per employee</h1>
+  <p class="muted">Full daily breakdown (date, in, out, pause, worked, supposed,
+    method) — one CSV per employee, bundled in a ZIP.</p>
+  <div class="grid">
+    <form method="get" action="{{ url_for('export_detailed_month') }}">
+      <p style="display:flex;gap:8px;">
+        <label>Month<br>
+          <select name="month">
+            {% for m in range(1,13) %}
+            <option value="{{ m }}" {{ 'selected' if m==this_month }}>{{ MONTH_NAMES[m] }}</option>
+            {% endfor %}
+          </select></label>
+        <label>Year<br><input name="year" type="number" value="{{ this_year }}" style="width:90px"></label>
+      </p>
+      <button type="submit">Download month ZIP</button>
+    </form>
+    <form method="get" action="{{ url_for('export_detailed_year') }}">
+      <p><label>Year<br><input name="year" type="number" value="{{ this_year }}" style="width:90px"></label></p>
+      <button type="submit">Download year ZIP</button>
+      <p class="muted" style="font-size:13px;">One folder per month, one CSV per employee.</p>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,4 @@
+flask
+waitress
+# NFC reader capture (evdev mode); not needed for stdin mode:
+evdev

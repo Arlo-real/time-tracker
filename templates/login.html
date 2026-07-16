@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Login · Time Tracker{% endblock %}
+{% block body %}
+<div class="card" style="max-width:360px;margin:60px auto;">
+  <h1>⏱ Time Tracker</h1>
+  <p class="muted">Admin access</p>
+  <form method="post">
+    <p><input name="password" type="password" placeholder="Password"
+              autofocus style="width:100%"></p>
+    <button type="submit" style="width:100%">Log in</button>
+  </form>
+</div>
+{% endblock %}

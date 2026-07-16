@@ -1,2 +1,8 @@
 .claude
 __pycache__
+*.pyc
+attendance.db
+attendance.db-wal
+attendance.db-shm
+.venv
+env
