@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ emp['name'] }} · {{ day }}{% endblock %}
+{% block title %}Time Tracker{% endblock %}
 {% block body %}
 <div class="card">
   <a class="muted" href="{{ url_for('employee_view', employee_id=emp['id'], year=d.year, month=d.month) }}">← back to month</a>
