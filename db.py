@@ -67,6 +67,7 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
+        _drop_legacy_absent_profiles(conn)
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS employees (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,8 +128,12 @@ def init_db():
                 employee_id INTEGER NOT NULL REFERENCES employees(id),
                 year        INTEGER NOT NULL,
                 month       INTEGER NOT NULL,
-                weekdays    TEXT NOT NULL,      -- CSV of weekday ints (Mon=0)
-                hours       REAL NOT NULL,      -- credited per such day
+                -- Per-weekday credited hours as a 'weekday:hours' CSV, e.g.
+                -- '0:5,1:2' = 5h Mon, 2h Tue. Weekdays are Mon=0. An empty
+                -- string means the profile is explicitly off for this month
+                -- (which is why the row still exists: it stops the carry
+                -- forward in get_absent_profile).
+                hours_map   TEXT NOT NULL,
                 label       TEXT,               -- e.g. 'Home office'
                 PRIMARY KEY (employee_id, year, month)
             );
@@ -156,6 +161,20 @@ def init_db():
         if not conn.execute("SELECT 1 FROM admin_config WHERE key='secret_key'").fetchone():
             conn.execute("INSERT INTO admin_config VALUES ('secret_key', ?)",
                          (secrets.token_hex(32),))
+
+
+def _drop_legacy_absent_profiles(conn) -> None:
+    """Discard the pre-per-weekday absent_profiles table if we find it.
+
+    The old layout stored one hours value for every selected weekday, which
+    cannot express "5h Mon, 2h Tue". CREATE TABLE IF NOT EXISTS won't alter an
+    existing table, so the old one is dropped here (before that CREATE runs)
+    and recreated empty. Old profiles are discarded and must be re-entered;
+    nothing else references this table.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(absent_profiles)")}
+    if cols and "hours_map" not in cols:
+        conn.execute("DROP TABLE absent_profiles")
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -613,29 +632,63 @@ def get_monthly_target(employee_id: int, year: int, month: int):
 
 # ── absent profiles (credited hours without scanning, e.g. home office) ───────
 
+def _encode_hours_map(hours_by_weekday: dict) -> str:
+    """{0: 5, 1: 2} -> '0:5,1:2'. Weekdays with no hours are dropped, so an
+    all-zero profile encodes to '' -- explicitly off."""
+    parts = []
+    for wd in sorted(hours_by_weekday):
+        h = float(hours_by_weekday[wd])
+        if h > 0:
+            parts.append(f"{int(wd)}:{h:g}")
+    return ",".join(parts)
+
+
+def _decode_hours_map(s: str) -> dict:
+    """'0:5,1:2' -> {0: 5.0, 1: 2.0}. Unparseable entries are skipped rather
+    than raising: a bad row must not take the month view down."""
+    out = {}
+    for part in (s or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        wd, _, h = part.partition(":")
+        try:
+            wd, h = int(wd), float(h)
+        except ValueError:
+            continue
+        if 0 <= wd <= 6 and h > 0:
+            out[wd] = h
+    return out
+
+
 def set_absent_profile(employee_id: int, year: int, month: int,
-                       weekdays: str, hours: float, label: str = "") -> None:
-    """Set the profile for one month. An empty weekdays CSV (or 0 hours) turns
-    it off for that month without disturbing earlier months."""
+                       hours_by_weekday: dict, label: str = "") -> None:
+    """Set the profile for one month, e.g. {0: 5, 1: 2} for 5h Mon and 2h Tue.
+
+    An empty/all-zero mapping turns the profile off for this month onwards
+    without disturbing earlier months -- the row still exists, which is what
+    stops get_absent_profile carrying an older month forward over it.
+    """
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO absent_profiles (employee_id, year, month, weekdays, hours, label)"
-            " VALUES (?,?,?,?,?,?)"
+            "INSERT INTO absent_profiles (employee_id, year, month, hours_map, label)"
+            " VALUES (?,?,?,?,?)"
             " ON CONFLICT(employee_id, year, month) DO UPDATE SET"
-            " weekdays=excluded.weekdays, hours=excluded.hours, label=excluded.label",
-            (employee_id, year, month, weekdays, hours, label))
+            " hours_map=excluded.hours_map, label=excluded.label",
+            (employee_id, year, month, _encode_hours_map(hours_by_weekday), label))
 
 
 def get_absent_profile(employee_id: int, year: int, month: int):
-    """Return (weekday_set, hours, label, configured).
+    """Return (hours_by_weekday, label, configured).
 
-    Carries forward like get_monthly_target: a standing home-office arrangement
-    keeps applying until a later month changes it.
+    hours_by_weekday maps weekday int (Mon=0) -> credited hours, holding only
+    the days that actually have hours. Carries forward like get_monthly_target:
+    a standing arrangement keeps applying until a later month changes it.
     """
     ym = year * 12 + (month - 1)
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT year, month, weekdays, hours, label FROM absent_profiles"
+            "SELECT year, month, hours_map, label FROM absent_profiles"
             " WHERE employee_id=?", (employee_id,)).fetchall()
     best = None
     for r in rows:
@@ -643,10 +696,9 @@ def get_absent_profile(employee_id: int, year: int, month: int):
         if rym <= ym and (best is None or rym > best[0]):
             best = (rym, r)
     if best is None:
-        return (set(), 0.0, "", False)
+        return ({}, "", False)
     r = best[1]
-    wds = {int(x) for x in r["weekdays"].split(",") if x != ""}
-    return (wds, r["hours"], r["label"] or "", True)
+    return (_decode_hours_map(r["hours_map"]), r["label"] or "", True)
 
 
 # ── punch editing (admin: "modify when he scanned his chip") ───────────────────
@@ -731,10 +783,11 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
       - holiday / closed : supposed 0 (removed), nothing credited
       - sick             : supposed 0 (removed), hours added to sick tally
       - vacation         : supposed = per_day, hours credited on their own line
-      - profile          : supposed = per_day, the profile's fixed hours are
-        credited without scanning (home office). It is a baseline, not a
-        replacement: any time actually scanned that day is added on top, so a
-        4h profile plus 3h scanned counts as 7h.
+      - profile          : supposed = per_day, the profile's fixed hours for
+        that weekday are credited without scanning (home office). Hours are per
+        weekday, e.g. 5h Mon and 2h Tue. It is a baseline, not a replacement:
+        any time actually scanned that day is added on top, so a 4h profile
+        plus 3h scanned counts as 7h.
       - worked hours     : physically-present time on ANY day (overtime counts)
     """
     target_hours, workdays_csv, configured = get_monthly_target(employee_id, year, month)
@@ -747,9 +800,8 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
 
     specials = get_special_days(year, month)
     absences = get_absences(employee_id, year, month)
-    profile_wds, profile_hours, profile_label, _profile_set = \
+    profile_hours, profile_label, _profile_set = \
         get_absent_profile(employee_id, year, month)
-    profile_day_s = profile_hours * 3600
 
     # all punches for the month, grouped by day
     prefix = f"{year:04d}-{month:02d}-"
@@ -802,13 +854,13 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
                 supposed_s = per_day_s
                 totals["vacation_s"] += per_day_s
                 totals["vacation_days"] += 1
-        elif scheduled_day and wd in profile_wds and profile_day_s > 0:
-            # Absent profile (home office): a fixed credit for the day. Applies
+        elif scheduled_day and profile_hours.get(wd, 0) > 0:
+            # Absent profile (home office): this weekday's credit. Applies
             # whether or not they scanned -- worked_s from any punches is added
             # to the totals below, on top of this credit.
             category = "profile"
             supposed_s = per_day_s
-            totals["profile_s"] += profile_day_s
+            totals["profile_s"] += profile_hours[wd] * 3600
             totals["profile_days"] += 1
             note = note or profile_label
         elif scheduled_day:
@@ -838,8 +890,7 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
     return dict(rows=rows, totals=totals, target_hours=target_hours,
                 workdays=workday_set, per_day_s=per_day_s,
                 scheduled_workdays=scheduled, configured=configured,
-                profile_weekdays=profile_wds, profile_hours=profile_hours,
-                profile_label=profile_label)
+                profile_hours=profile_hours, profile_label=profile_label)
 
 
 if __name__ == "__main__":

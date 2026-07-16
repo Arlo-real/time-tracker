@@ -139,20 +139,29 @@ def set_target(employee_id):
 @app.route("/employee/<int:employee_id>/profile", methods=["POST"])
 @login_required
 def set_profile(employee_id):
-    """Absent profile: weekdays credited a fixed number of hours without
-    scanning (home office). Set per month; carries forward until changed."""
+    """Absent profile: hours credited per weekday without scanning (home
+    office), e.g. 5h Mon and 2h Tue. Set per month; carries forward until
+    changed."""
     year, month = month_arg()
-    try:
-        hours = float(request.form.get("hours", "0") or 0)
-    except ValueError:
-        hours = 0.0
-    weekdays = ",".join(request.form.getlist("weekdays"))
-    db.set_absent_profile(employee_id, year, month, weekdays, hours,
+    hours_by_weekday = {}
+    for wd in range(7):
+        raw = request.form.get(f"h{wd}", "").strip()
+        if not raw:
+            continue
+        try:
+            h = float(raw)
+        except ValueError:
+            flash(f"Ignored an invalid hours value for {db.WEEKDAY_NAMES[wd]}.",
+                  "error")
+            continue
+        if h > 0:
+            hours_by_weekday[wd] = h
+    db.set_absent_profile(employee_id, year, month, hours_by_weekday,
                           request.form.get("label", "").strip())
-    if weekdays and hours > 0:
+    if hours_by_weekday:
         flash("Absent profile saved.", "ok")
     else:
-        flash("Absent profile turned off for this month.", "ok")
+        flash("Absent profile turned off from this month on.", "ok")
     return redirect(url_for("employee_view", employee_id=employee_id,
                             year=year, month=month))
 

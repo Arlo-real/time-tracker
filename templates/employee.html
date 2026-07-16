@@ -139,22 +139,22 @@
       e.g. home office. Any time they <em>do</em> scan on such a day is added on
       top of this credit.</p>
     <form method="post" action="{{ url_for('set_profile', employee_id=emp['id'], year=year, month=month) }}">
-      <p><label>Hours credited per day<br>
-        <input name="hours" type="number" step="0.5" min="0"
-               value="{{ '%g'|format(summary.profile_hours) }}"></label></p>
-      <p>On these days:<br>
+      <p>Hours credited per weekday <span class="muted">(blank or 0 = none)</span>:</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
       {% for i,name in WEEKDAYS %}
-        <label class="chk"><input type="checkbox" name="weekdays" value="{{ i }}"
-          {{ 'checked' if i in summary.profile_weekdays }}> {{ name }}</label>
-      {% endfor %}</p>
-      <p><label>Label<br>
+        <div><label class="muted">{{ name }}</label><br>
+          <input name="h{{ i }}" type="number" step="0.5" min="0" style="width:64px;"
+                 value="{{ '%g'|format(summary.profile_hours[i]) if i in summary.profile_hours else '' }}"></div>
+      {% endfor %}
+      </div>
+      <p style="margin-top:10px;"><label>Label<br>
         <input name="label" value="{{ summary.profile_label }}"
                placeholder="e.g. Home office"></label></p>
       <p class="muted" style="font-size:13px;">
-        {% if summary.profile_weekdays and summary.profile_hours %}
+        {% if summary.profile_hours %}
           This month: {{ t.profile_days }} day(s) → {{ t.profile_s|hm }} credited.
         {% else %}
-          Off. Tick days and set hours above to enable.
+          Off. Enter hours on one or more weekdays to enable.
         {% endif %}
         Carries into later months until you change it.</p>
       <button type="submit">Save profile</button>
