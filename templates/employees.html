@@ -46,7 +46,7 @@
         </form><br>
       {% endfor %}
       {% if pending_enroll and pending_enroll['employee_id'] == e['id'] %}
-        <div class="pill" style="margin:4px 0;">
+        <div class="pill work" style="margin:4px 0;">
           Waiting for a scan… tap an <strong>unassigned</strong> chip on the reader
         </div>
         <form method="post" style="display:inline-flex;gap:6px;">
@@ -72,8 +72,34 @@
     </div>
     <div class="right" style="align-self:end;">
       <a class="btn" href="{{ url_for('employee_view', employee_id=e['id']) }}">View month →</a>
+      <div class="muted" style="margin-top:10px;">Remove employee</div>
+      <form method="post" style="display:inline-flex;gap:6px;"
+            onsubmit="return confirm('Delete {{ e['name'] }}?\n\nThis permanently removes ALL their punches, chips and absences. It cannot be undone.');">
+        <input type="hidden" name="action" value="delete">
+        <input type="hidden" name="id" value="{{ e['id'] }}">
+        <input type="password" name="password" placeholder="admin password"
+               size="14" required autocomplete="off">
+        <button class="danger" type="submit">Delete</button>
+      </form>
     </div>
   </div>
 </div>
 {% endfor %}
+
+{% if pending_enroll %}
+<script>
+// An enrollment is armed. The scan station links the chip in another process,
+// so poll until it is consumed (or the window lapses) and then show the result.
+(function () {
+  var poll = setInterval(function () {
+    fetch("{{ url_for('enroll_status') }}", {cache: "no-store"})
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        if (!s.pending) { clearInterval(poll); location.reload(); }
+      })
+      .catch(function () { /* transient: keep polling */ });
+  }, 1500);
+})();
+</script>
+{% endif %}
 {% endblock %}

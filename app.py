@@ -136,6 +136,27 @@ def set_target(employee_id):
                             year=year, month=month))
 
 
+@app.route("/employee/<int:employee_id>/profile", methods=["POST"])
+@login_required
+def set_profile(employee_id):
+    """Absent profile: weekdays credited a fixed number of hours without
+    scanning (home office). Set per month; carries forward until changed."""
+    year, month = month_arg()
+    try:
+        hours = float(request.form.get("hours", "0") or 0)
+    except ValueError:
+        hours = 0.0
+    weekdays = ",".join(request.form.getlist("weekdays"))
+    db.set_absent_profile(employee_id, year, month, weekdays, hours,
+                          request.form.get("label", "").strip())
+    if weekdays and hours > 0:
+        flash("Absent profile saved.", "ok")
+    else:
+        flash("Absent profile turned off for this month.", "ok")
+    return redirect(url_for("employee_view", employee_id=employee_id,
+                            year=year, month=month))
+
+
 @app.route("/employee/<int:employee_id>/absence", methods=["POST"])
 @login_required
 def set_absence(employee_id):
@@ -219,8 +240,20 @@ def punch_edit(employee_id, day):
 @login_required
 def special_days():
     if request.method == "POST":
-        if request.form.get("action") == "delete":
+        action = request.form.get("action")
+        if action == "delete":
             db.remove_special_day(request.form.get("date", ""))
+        elif action == "delete_recurring":
+            db.remove_recurring_special_day(request.form.get("md", ""))
+        elif action == "add_recurring":
+            try:
+                db.set_recurring_special_day(
+                    int(request.form.get("month", 0)),
+                    int(request.form.get("day", 0)),
+                    request.form.get("kind", "holiday"),
+                    request.form.get("label", ""))
+            except (ValueError, TypeError):
+                flash("Invalid day for that month.", "error")
         else:
             d = request.form.get("date", "")
             try:
@@ -230,10 +263,23 @@ def special_days():
             except ValueError:
                 flash("Invalid date.", "error")
         return redirect(url_for("special_days"))
-    return render_template("special_days.html", days=db.list_special_days())
+    return render_template("special_days.html", days=db.list_special_days(),
+                           recurring=db.list_recurring_special_days())
 
 
 # ── employees + chip enrollment ───────────────────────────────────────────────
+
+@app.route("/api/enroll_status")
+@login_required
+def enroll_status():
+    """Polled by the employees page while a chip enrollment is armed, so the
+    page can refresh itself the moment the scan station links the chip (or the
+    window lapses). The station is a separate process, so there is nothing to
+    push -- the browser has to ask."""
+    p = db.get_pending_enroll()
+    return {"pending": p is not None,
+            "employee_id": p["employee_id"] if p else None}
+
 
 @app.route("/employees", methods=["GET", "POST"])
 @login_required
@@ -246,6 +292,18 @@ def employees():
                 db.add_employee(name)
         elif action == "rename":
             db.rename_employee(int(request.form["id"]), request.form.get("name", "").strip())
+        elif action == "delete":
+            # Destroys the working-time record, so re-check the password even
+            # though the session is already logged in.
+            emp = db.get_employee(int(request.form["id"]))
+            if emp is None:
+                flash("No such employee.", "error")
+            elif not db.verify_admin(request.form.get("password", "")):
+                flash(f"Wrong password — {emp['name']} was NOT deleted.", "error")
+            else:
+                db.delete_employee(emp["id"])
+                flash(f"Deleted {emp['name']} and all their punches, chips "
+                      f"and absences.", "ok")
         elif action == "active":
             db.set_active(int(request.form["id"]), request.form.get("active") == "1")
         elif action == "chip":

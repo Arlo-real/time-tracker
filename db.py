@@ -111,6 +111,27 @@ def init_db():
                 kind  TEXT NOT NULL,
                 label TEXT
             );
+            -- Same, but repeating every year on a fixed day (e.g. 24.12).
+            -- A one-off special_days row for a concrete date overrides these,
+            -- so a single year can be changed or cancelled.
+            CREATE TABLE IF NOT EXISTS recurring_special_days (
+                md    TEXT PRIMARY KEY,         -- 'MM-DD'
+                kind  TEXT NOT NULL,
+                label TEXT
+            );
+            -- "Absent profile": weekdays an employee is credited a fixed number
+            -- of hours without scanning (home office etc). Per employee per
+            -- month so it can be changed month to month; carried forward from
+            -- the latest earlier month like monthly_targets.
+            CREATE TABLE IF NOT EXISTS absent_profiles (
+                employee_id INTEGER NOT NULL REFERENCES employees(id),
+                year        INTEGER NOT NULL,
+                month       INTEGER NOT NULL,
+                weekdays    TEXT NOT NULL,      -- CSV of weekday ints (Mon=0)
+                hours       REAL NOT NULL,      -- credited per such day
+                label       TEXT,               -- e.g. 'Home office'
+                PRIMARY KEY (employee_id, year, month)
+            );
             -- Monthly working-time target + which weekdays are workdays, per
             -- employee per month. workdays is a CSV of weekday ints (Mon=0).
             CREATE TABLE IF NOT EXISTS monthly_targets (
@@ -389,6 +410,24 @@ def get_employee(employee_id: int):
             (employee_id,)).fetchone()
 
 
+def delete_employee(employee_id: int) -> None:
+    """Delete an employee and everything belonging to them: punches, chips,
+    absences, monthly targets and any armed enrollment.
+
+    Irreversible, and it destroys the working-time record -- the caller is
+    expected to have re-checked the admin password first. Children go before
+    the parent because foreign_keys is ON, and it is one transaction so a
+    failure part-way cannot leave an employee half-deleted.
+    """
+    with get_conn() as conn:
+        conn.execute("DELETE FROM punches WHERE employee_id=?", (employee_id,))
+        conn.execute("DELETE FROM chips WHERE employee_id=?", (employee_id,))
+        conn.execute("DELETE FROM absences WHERE employee_id=?", (employee_id,))
+        conn.execute("DELETE FROM monthly_targets WHERE employee_id=?", (employee_id,))
+        conn.execute("DELETE FROM enroll_requests WHERE employee_id=?", (employee_id,))
+        conn.execute("DELETE FROM employees WHERE id=?", (employee_id,))
+
+
 def rename_employee(employee_id: int, name: str) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE employees SET name=? WHERE id=?", (name, employee_id))
@@ -479,18 +518,62 @@ def remove_special_day(date_str: str) -> None:
 
 
 def get_special_days(year: int, month: int) -> dict:
-    prefix = f"{year:04d}-{month:02d}-"
+    """Concrete 'YYYY-MM-DD' -> special day for one month.
+
+    Merges the yearly recurring entries (expanded to this year) with the one-off
+    ones. A one-off row for the same date wins, so a given year can override or
+    cancel a recurring rule without touching the rule itself.
+    """
+    out = {}
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT date, kind, label FROM special_days WHERE date LIKE ?",
-            (prefix + "%",)).fetchall()
-    return {r["date"]: r for r in rows}
+        for r in conn.execute(
+                "SELECT md, kind, label FROM recurring_special_days WHERE md LIKE ?",
+                (f"{month:02d}-%",)).fetchall():
+            try:
+                ds = _date(year, month, int(r["md"][3:5])).strftime(DATE_FMT)
+            except ValueError:
+                continue  # e.g. a 02-29 rule in a non-leap year
+            out[ds] = {"date": ds, "kind": r["kind"], "label": r["label"],
+                       "recurring": True}
+        for r in conn.execute(
+                "SELECT date, kind, label FROM special_days WHERE date LIKE ?",
+                (f"{year:04d}-{month:02d}-%",)).fetchall():
+            out[r["date"]] = {"date": r["date"], "kind": r["kind"],
+                              "label": r["label"], "recurring": False}
+    return out
 
 
 def list_special_days():
     with get_conn() as conn:
         return conn.execute(
             "SELECT date, kind, label FROM special_days ORDER BY date DESC").fetchall()
+
+
+# ── recurring special days (same calendar day every year, e.g. 24.12) ─────────
+
+def set_recurring_special_day(month: int, day: int, kind: str,
+                              label: str = "") -> None:
+    """kind is 'holiday' or 'closed'. Raises ValueError on an impossible day."""
+    month, day = int(month), int(day)
+    # 2024 is a leap year, so 29.02 validates and is kept as a rule; it is then
+    # simply skipped in years where it does not exist.
+    _date(2024, month, day)
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO recurring_special_days (md, kind, label) VALUES (?,?,?)"
+            " ON CONFLICT(md) DO UPDATE SET kind=excluded.kind, label=excluded.label",
+            (f"{month:02d}-{day:02d}", kind, label))
+
+
+def remove_recurring_special_day(md: str) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM recurring_special_days WHERE md=?", (md,))
+
+
+def list_recurring_special_days():
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT md, kind, label FROM recurring_special_days ORDER BY md").fetchall()
 
 
 # ── monthly target + workdays (per employee, per month) ───────────────────────
@@ -526,6 +609,44 @@ def get_monthly_target(employee_id: int, year: int, month: int):
         return (0.0, DEFAULT_WORKDAYS, False)
     r = best[1]
     return (r["target_hours"], r["workdays"], True)
+
+
+# ── absent profiles (credited hours without scanning, e.g. home office) ───────
+
+def set_absent_profile(employee_id: int, year: int, month: int,
+                       weekdays: str, hours: float, label: str = "") -> None:
+    """Set the profile for one month. An empty weekdays CSV (or 0 hours) turns
+    it off for that month without disturbing earlier months."""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO absent_profiles (employee_id, year, month, weekdays, hours, label)"
+            " VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(employee_id, year, month) DO UPDATE SET"
+            " weekdays=excluded.weekdays, hours=excluded.hours, label=excluded.label",
+            (employee_id, year, month, weekdays, hours, label))
+
+
+def get_absent_profile(employee_id: int, year: int, month: int):
+    """Return (weekday_set, hours, label, configured).
+
+    Carries forward like get_monthly_target: a standing home-office arrangement
+    keeps applying until a later month changes it.
+    """
+    ym = year * 12 + (month - 1)
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT year, month, weekdays, hours, label FROM absent_profiles"
+            " WHERE employee_id=?", (employee_id,)).fetchall()
+    best = None
+    for r in rows:
+        rym = r["year"] * 12 + (r["month"] - 1)
+        if rym <= ym and (best is None or rym > best[0]):
+            best = (rym, r)
+    if best is None:
+        return (set(), 0.0, "", False)
+    r = best[1]
+    wds = {int(x) for x in r["weekdays"].split(",") if x != ""}
+    return (wds, r["hours"], r["label"] or "", True)
 
 
 # ── punch editing (admin: "modify when he scanned his chip") ───────────────────
@@ -610,6 +731,10 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
       - holiday / closed : supposed 0 (removed), nothing credited
       - sick             : supposed 0 (removed), hours added to sick tally
       - vacation         : supposed = per_day, hours credited on their own line
+      - profile          : supposed = per_day, the profile's fixed hours are
+        credited without scanning (home office). It is a baseline, not a
+        replacement: any time actually scanned that day is added on top, so a
+        4h profile plus 3h scanned counts as 7h.
       - worked hours     : physically-present time on ANY day (overtime counts)
     """
     target_hours, workdays_csv, configured = get_monthly_target(employee_id, year, month)
@@ -622,6 +747,9 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
 
     specials = get_special_days(year, month)
     absences = get_absences(employee_id, year, month)
+    profile_wds, profile_hours, profile_label, _profile_set = \
+        get_absent_profile(employee_id, year, month)
+    profile_day_s = profile_hours * 3600
 
     # all punches for the month, grouped by day
     prefix = f"{year:04d}-{month:02d}-"
@@ -635,9 +763,9 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
         by_day.setdefault(p["work_date"], []).append(p)
 
     rows = []
-    totals = dict(worked_s=0, supposed_s=0, sick_s=0, vacation_s=0,
+    totals = dict(worked_s=0, supposed_s=0, sick_s=0, vacation_s=0, profile_s=0,
                   worked_days=0, supposed_days=0, sick_days=0, vacation_days=0,
-                  holiday_days=0, closed_days=0)
+                  profile_days=0, holiday_days=0, closed_days=0)
 
     for d in range(1, days_in_month + 1):
         dt = _date(year, month, d)
@@ -674,6 +802,15 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
                 supposed_s = per_day_s
                 totals["vacation_s"] += per_day_s
                 totals["vacation_days"] += 1
+        elif scheduled_day and wd in profile_wds and profile_day_s > 0:
+            # Absent profile (home office): a fixed credit for the day. Applies
+            # whether or not they scanned -- worked_s from any punches is added
+            # to the totals below, on top of this credit.
+            category = "profile"
+            supposed_s = per_day_s
+            totals["profile_s"] += profile_day_s
+            totals["profile_days"] += 1
+            note = note or profile_label
         elif scheduled_day:
             category = "work"
             supposed_s = per_day_s
@@ -693,12 +830,16 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
             last.strftime("%H:%M") if last else "",
             pause_s, worked_s, supposed_s, methods, incomplete, note))
 
-    # fulfilled = physically worked + credited vacation (holidays/sick removed)
-    totals["fulfilled_s"] = totals["worked_s"] + totals["vacation_s"]
+    # fulfilled = physically worked + credited vacation + credited profile days
+    # (holidays/sick removed)
+    totals["fulfilled_s"] = (totals["worked_s"] + totals["vacation_s"]
+                             + totals["profile_s"])
     totals["balance_s"] = totals["fulfilled_s"] - totals["supposed_s"]
     return dict(rows=rows, totals=totals, target_hours=target_hours,
                 workdays=workday_set, per_day_s=per_day_s,
-                scheduled_workdays=scheduled, configured=configured)
+                scheduled_workdays=scheduled, configured=configured,
+                profile_weekdays=profile_wds, profile_hours=profile_hours,
+                profile_label=profile_label)
 
 
 if __name__ == "__main__":
