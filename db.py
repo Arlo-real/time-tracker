@@ -719,10 +719,18 @@ def add_manual_punch(employee_id: int, punched_at: str) -> None:
 
 
 def update_punch(punch_id: int, punched_at: str) -> None:
+    """Move a punch to a different time, re-labelling it 'manual'.
+
+    Once an admin changes the time, the row no longer says what the reader saw
+    -- so it stops counting as a chip scan. The method column is the audit
+    trail separating what actually happened at the reader from what someone
+    decided afterwards, and a silently-edited 'chip' punch would destroy that.
+    """
     dt = datetime.strptime(punched_at, TS_FMT)
     with get_conn() as conn:
         conn.execute(
-            "UPDATE punches SET punched_at=?, work_date=? WHERE id=?",
+            "UPDATE punches SET punched_at=?, work_date=?, method='manual'"
+            " WHERE id=?",
             (dt.strftime(TS_FMT), dt.strftime(DATE_FMT), punch_id))
 
 
