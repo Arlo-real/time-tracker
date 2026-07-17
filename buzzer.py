@@ -16,28 +16,38 @@ Distinct patterns so the sound alone tells the employee what happened:
   * alarm       -> three long low buzzes  (clock not trusted, nothing recorded)
 """
 
-import math
 import struct
 import subprocess
 import sys
 import wave
 
 _RATE = 44100          # samples per second
-_AMPLITUDE = 0.6       # 0..1, headroom to avoid clipping
+# 0..1 peak. Tones are played one at a time and never summed, so a full-scale
+# square wave does not clip -- the small margin is for the DAC's sake.
+_AMPLITUDE = 0.95
 
 
 def _tone_samples(freq, seconds):
-    """Yield int16 sample values for a sine tone, with a short fade in/out
-    so the buzzer doesn't click at the edges."""
+    """Yield int16 samples for one tone, with a short fade in/out so the
+    buzzer doesn't click at the edges.
+
+    Square wave rather than sine, for loudness: at the same peak level a square
+    carries ~3 dB more RMS energy, and its harmonics sit where a small piezo or
+    speaker actually radiates. A sine puts everything at the fundamental, which
+    is exactly where a tiny transducer is least efficient -- the same tone comes
+    out noticeably quieter for the same peak voltage.
+    """
     n = int(_RATE * seconds)
     fade = max(1, int(_RATE * 0.005))  # 5 ms fade
+    period = _RATE / freq
     for i in range(n):
         env = 1.0
         if i < fade:
             env = i / fade
         elif i > n - fade:
             env = (n - i) / fade
-        val = _AMPLITUDE * env * math.sin(2 * math.pi * freq * i / _RATE)
+        high = (i % period) < (period / 2.0)
+        val = _AMPLITUDE * env * (1.0 if high else -1.0)
         yield int(val * 32767)
 
 
