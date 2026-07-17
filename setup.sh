@@ -4,11 +4,13 @@
 #
 #   sudo ./setup.sh              # install deps, init DB, install & start services
 #   sudo ./setup.sh --no-services  # deps + DB only, no systemd services
+#   sudo ./setup.sh --restore      # restore the DB from a backup on a USB stick
 #
 # Installs system packages, gives the run user access to the reader (input),
-# initialises the database, and installs two systemd services:
+# initialises the database, and installs three systemd services:
 #   timetracker-scan   -> the scan station (main.py: NFC reader + buzzer)
 #   timetracker-admin  -> the admin website (app.py: http://<pi>:8080)
+#   timetracker-backup -> copies the DB to any USB stick (backup.py)
 #
 set -euo pipefail
 
@@ -19,6 +21,27 @@ INSTALL_SERVICES=1
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_USER="${SUDO_USER:-$(id -un)}"
 PY=/usr/bin/python3
+
+# ── restore mode: pick a backup off a USB stick and make it the live DB ───────
+if [ "${1:-}" = "--restore" ]; then
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "Please run with sudo:  sudo ./setup.sh --restore" >&2
+    exit 1
+  fi
+  echo "== Restore from USB stick =="
+  echo "-- Stopping services so nothing writes while we swap the database..."
+  systemctl stop timetracker-scan timetracker-admin timetracker-backup 2>/dev/null || true
+  set +e
+  "$PY" "$PROJECT_DIR/backup.py" --restore
+  rc=$?
+  set -e
+  if [ $rc -eq 0 ]; then
+    chown "$RUN_USER":"$RUN_USER" "$PROJECT_DIR/attendance.db" 2>/dev/null || true
+  fi
+  echo "-- Restarting services..."
+  systemctl start timetracker-scan timetracker-admin timetracker-backup 2>/dev/null || true
+  exit $rc
+fi
 
 echo "== Time-tracker setup =="
 echo "  project : $PROJECT_DIR"
@@ -39,6 +62,11 @@ apt-get update
 apt-get install -y python3 python3-flask python3-waitress python3-evdev
 # alsa-utils provides 'aplay', used to sound the buzzer on the audio jack.
 apt-get install -y alsa-utils
+# Mount helpers so a backup stick works whatever it is formatted with:
+# NTFS (Windows-formatted), exFAT (big sticks), FAT32. ext4 needs nothing.
+apt-get install -y ntfs-3g exfatprogs dosfstools || \
+  apt-get install -y ntfs-3g exfat-fuse exfat-utils dosfstools || \
+  echo "!! Some filesystem helpers missing; sticks in those formats won't mount."
 
 # ── 2. hardware access groups ─────────────────────────────────────────────────
 echo "-- Granting $RUN_USER access to input (reader) and audio (buzzer)..."
@@ -100,15 +128,44 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
+> /etc/systemd/system/timetracker-backup.service cat <<EOF
+[Unit]
+Description=Time-tracker USB backup (copies the DB to any stick plugged in)
+After=local-fs.target
+
+[Service]
+Type=simple
+# root: mounting arbitrary USB sticks needs it. The service only reads the
+# database and writes to sticks it mounts itself.
+User=root
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$PY $PROJECT_DIR/backup.py --watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
 systemctl enable --now timetracker-admin.service
 systemctl enable --now timetracker-scan.service
+systemctl enable --now timetracker-backup.service
 
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo
 echo "== Done =="
 echo "Admin site : http://${IP:-<pi-ip>}:8080   (default password: admin — change under Settings)"
-echo "Services   : timetracker-admin, timetracker-scan  (systemctl status <name>)"
+echo "Services   : timetracker-admin, timetracker-scan, timetracker-backup"
+echo "             (systemctl status <name>)"
+echo
+echo "BACKUPS:"
+echo " * Plug in any USB stick (NTFS/exFAT/FAT32/ext4) — it is copied to"
+echo "   <stick>/timetracker-backups/ and the buzzer beeps twice when done."
+echo "   It is unmounted straight away, so the stick is always safe to pull."
+echo " * If left plugged in it also backs up daily at 01:00 and on every boot."
+echo " * See what is on a stick:   sudo $PY $PROJECT_DIR/backup.py --list"
+echo " * Restore one:              sudo $PROJECT_DIR/setup.sh --restore"
 echo
 echo "NOTE:"
 echo " * '$RUN_USER' was added to input/gpio groups — log out/in (or reboot) for it to take effect,"

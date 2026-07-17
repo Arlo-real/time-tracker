@@ -10,6 +10,8 @@ Distinct patterns so the sound alone tells the employee what happened:
   * clock OUT   -> two short falling beeps  (ok, you're out)
   * duplicate   -> one short neutral blip  (already scanned, nothing stored)
   * enrolled    -> three quick rising blips  (chip linked to an employee)
+  * backup      -> two identical high blips  (USB backup written)
+  * backup fail -> two mid-low buzzes  (USB stick present but backup failed)
   * error       -> one long low buzz  (unknown chip / failure)
   * alarm       -> three long low buzzes  (clock not trusted, nothing recorded)
 """
@@ -105,6 +107,19 @@ def beep_enrolled():
     _play([(784, 0.09), (0, 0.04), (988, 0.09), (0, 0.04), (1319, 0.14)])
 
 
+def beep_backup():
+    """USB backup written: two identical high blips. Nothing else uses two
+    equal high notes, so it is not mistaken for a punch."""
+    _play([(1568, 0.10), (0, 0.06), (1568, 0.10)])
+
+
+def beep_backup_failed():
+    """A stick was there but the backup did not happen: two mid-low buzzes.
+    Worth a sound of its own -- a silent failure means believing you have
+    backups when you do not."""
+    _play([(300, 0.25), (0, 0.08), (300, 0.25)])
+
+
 def beep_error():
     """Something went wrong: one long low buzz."""
     _play([(220, 0.6)])
@@ -120,9 +135,11 @@ def beep_alarm():
 if __name__ == "__main__":
     # Quick manual test: play each pattern with a gap between.
     from time import sleep
-    print("IN...");       beep_in();        sleep(0.5)
-    print("OUT...");      beep_out();       sleep(0.5)
-    print("DUP...");      beep_duplicate(); sleep(0.5)
-    print("ENROLLED..."); beep_enrolled();  sleep(0.5)
-    print("ERROR...");    beep_error();     sleep(0.5)
-    print("ALARM...");    beep_alarm()
+    print("IN...");          beep_in();            sleep(0.5)
+    print("OUT...");         beep_out();           sleep(0.5)
+    print("DUP...");         beep_duplicate();     sleep(0.5)
+    print("ENROLLED...");    beep_enrolled();      sleep(0.5)
+    print("BACKUP...");      beep_backup();        sleep(0.5)
+    print("BACKUP FAIL..."); beep_backup_failed(); sleep(0.5)
+    print("ERROR...");       beep_error();         sleep(0.5)
+    print("ALARM...");       beep_alarm()
