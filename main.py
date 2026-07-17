@@ -86,6 +86,13 @@ def handle(serial):
 def main():
     db.init_db()
 
+    # Sound off once the database is open but before the clock gate: this says
+    # "the software is up and the DB is healthy", which is exactly the part a
+    # silent box leaves you guessing about after a power cut. Waiting until
+    # after wait_for_sync() would be worse -- that call can block for a minute,
+    # so the chime would arrive too late to mean "it booted".
+    buzzer.beep_startup()
+
     if wait_timesync.wait_for_sync():
         _clock_ok.set()
     else:

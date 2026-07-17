@@ -6,6 +6,7 @@ extra Python packages: tones are synthesised as a WAV in memory and piped to
 ``aplay`` (from alsa-utils, already present on Raspberry Pi OS).
 
 Distinct patterns so the sound alone tells the employee what happened:
+  * startup     -> four-note rising chime  (scan station started)
   * clock IN    -> two short rising beeps  (ok, you're in)
   * clock OUT   -> two short falling beeps  (ok, you're out)
   * duplicate   -> one short neutral blip  (already scanned, nothing stored)
@@ -96,6 +97,17 @@ def _play(segments):
         print(f"[buzzer] playback failed: {e}", file=sys.stderr)
 
 
+def beep_startup():
+    """Scan station started: a four-note rising chime.
+
+    Four notes is the tell -- no other pattern here has more than three, so a
+    startup is never mistaken for a punch or an enrollment. It also means an
+    unexpected chime during the day is worth noticing: it says the service
+    restarted (crash, power cut) when nobody asked it to.
+    """
+    _play([(523, 0.10), (659, 0.10), (784, 0.10), (1047, 0.22)])
+
+
 def beep_in():
     """Clocked IN: two short rising beeps."""
     _play([(880, 0.12), (0, 0.05), (1320, 0.16)])
@@ -145,6 +157,7 @@ def beep_alarm():
 if __name__ == "__main__":
     # Quick manual test: play each pattern with a gap between.
     from time import sleep
+    print("STARTUP...");     beep_startup();       sleep(0.5)
     print("IN...");          beep_in();            sleep(0.5)
     print("OUT...");         beep_out();           sleep(0.5)
     print("DUP...");         beep_duplicate();     sleep(0.5)
