@@ -537,3 +537,16 @@ def export_employee_month(employee_id):
     fn = f"{_safe(emp['name'])}_{year}-{month:02d}.csv"
     return Response(text, mimetype="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+if __name__ == "__main__":
+    host, port = "0.0.0.0", 8080
+    try:
+        from waitress import serve
+        print(f"Serving admin site on http://{host}:{port}  (waitress)", flush=True)
+        serve(app, host=host, port=port, threads=8)
+    except ImportError:
+        print("waitress not installed — using Flask's dev server "
+              "(ok for local use; `apt install python3-waitress` for production).",
+              flush=True)
+        app.run(host=host, port=port, debug=False)
