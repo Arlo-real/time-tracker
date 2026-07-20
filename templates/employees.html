@@ -39,7 +39,10 @@
   <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px;">
     <div class="muted">NFC chips</div>
     {% for c in chips[e['id']] %}
-      <form method="post" style="display:inline-flex;gap:4px;margin:2px 0;">
+      <form method="post" style="display:inline-flex;gap:4px;margin:2px 0;"
+            {# name goes through tojson, not straight into the string: an
+               apostrophe in a name would otherwise close the JS literal #}
+            onsubmit='return confirm("Unlink chip " + {{ c["serial"]|tojson }} + " from " + {{ e["name"]|tojson }} + "?\n\nThey cannot clock in with it until it is linked again.");'>
         <input type="hidden" name="action" value="unchip">
         <input type="hidden" name="serial" value="{{ c['serial'] }}">
         <code>{{ c['serial'] }}</code>
