@@ -19,12 +19,6 @@
       <a class="btn ghost" href="?year={{next_y}}&month={{next_m}}">Next →</a>
     </div>
   </div>
-  <form method="post" action="{{ url_for('rename_employee', employee_id=emp['id'], year=year, month=month) }}"
-        style="display:flex;gap:6px;margin-top:12px;align-items:end;">
-    <div><label class="muted">Name</label><br>
-      <input name="name" value="{{ emp['name'] }}" required></div>
-    <button class="ghost" type="submit">Rename</button>
-  </form>
   {% if not summary.configured %}
   <p class="flash error" style="margin-top:12px;">No monthly target set for this month yet — hours below assume 0. Set it under “Monthly target”.</p>
   {% endif %}
@@ -237,15 +231,20 @@
               <label class="muted">Audio file</label><br>
               <input type="file" name="sound" accept="audio/*" required>
             </div>
-            <div>
-              <label class="muted">Start (s)</label><br>
-              <input name="start_s" type="number" step="0.01" min="0"
-                     placeholder="0" style="width:84px;">
-            </div>
-            <div>
-              <label class="muted">End (s)</label><br>
-              <input name="end_s" type="number" step="0.01" min="0"
-                     placeholder="end" style="width:84px;">
+            <!-- start and end wrapped together: as separate flex children they
+                 break apart onto different lines on a narrow screen, which
+                 reads as two unrelated fields instead of one range -->
+            <div style="display:flex;gap:8px;align-items:end;flex:none;">
+              <div>
+                <label class="muted">Start (s)</label><br>
+                <input name="start_s" type="number" step="0.01" min="0"
+                       placeholder="0" style="width:84px;">
+              </div>
+              <div>
+                <label class="muted">End (s)</label><br>
+                <input name="end_s" type="number" step="0.01" min="0"
+                       placeholder="end" style="width:84px;">
+              </div>
             </div>
             <button class="ghost" type="submit">{{ 'Replace' if s else 'Upload' }}</button>
           </div>
@@ -262,6 +261,32 @@
     {% else %}<p class="muted">No chip linked. Add one under “Manage people”.</p>{% endif %}
     <p class="muted" style="font-size:13px;">Chip enrollment is on the
       <a href="{{ url_for('employees') }}">Manage people</a> page.</p>
+  </div>
+</div>
+
+<!-- name & removal, on their own at the bottom: rarely used, and one of them
+     is irreversible -- neither belongs next to the day-to-day controls -->
+<div class="card">
+  <h2>Employee</h2>
+  <form method="post" action="{{ url_for('rename_employee', employee_id=emp['id'], year=year, month=month) }}"
+        style="display:flex;gap:6px;align-items:end;flex-wrap:wrap;">
+    <div><label class="muted">Name</label><br>
+      <input name="name" value="{{ emp['name'] }}" required></div>
+    <button class="ghost" type="submit">Rename</button>
+  </form>
+
+  <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px;">
+    <div class="muted">Remove employee</div>
+    <p class="muted" style="font-size:13px;margin:4px 0 8px;">
+      Permanently deletes {{ emp['name'] }} and <strong>all</strong> their punches,
+      chips, absences, targets and school time. This cannot be undone.</p>
+    <form method="post" action="{{ url_for('delete_employee', employee_id=emp['id']) }}"
+          style="display:inline-flex;gap:6px;flex-wrap:wrap;"
+          onsubmit="return confirm('Delete {{ emp['name'] }}?\n\nThis permanently removes ALL their punches, chips and absences. It cannot be undone.');">
+      <input type="password" name="password" placeholder="admin password"
+             size="16" required autocomplete="off">
+      <button class="danger" type="submit">Delete</button>
+    </form>
   </div>
 </div>
 {% endblock %}

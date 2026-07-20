@@ -159,6 +159,27 @@ def rename_employee(employee_id):
                             year=year, month=month))
 
 
+@app.route("/employee/<int:employee_id>/delete", methods=["POST"])
+@login_required
+def delete_employee(employee_id):
+    """Delete an employee and everything belonging to them.
+
+    Re-checks the admin password even though the session is already signed in:
+    this destroys the working-time record, and a logged-in browser left open is
+    exactly the way it would happen by accident.
+    """
+    emp = db.get_employee(employee_id)
+    if emp is None:
+        abort(404)
+    if not db.verify_admin(request.form.get("password", "")):
+        flash(f"Wrong password — {emp['name']} was NOT deleted.", "error")
+        return redirect(url_for("employee_view", employee_id=employee_id))
+    db.delete_employee(employee_id)
+    flash(f"Deleted {emp['name']} and all their punches, chips and absences.", "ok")
+    # They no longer exist, so there is no employee page to go back to.
+    return redirect(url_for("employees"))
+
+
 @app.route("/employee/<int:employee_id>/target", methods=["POST"])
 @login_required
 def set_target(employee_id):
@@ -446,18 +467,6 @@ def employees():
             name = request.form.get("name", "").strip()
             if name:
                 db.add_employee(name)
-        elif action == "delete":
-            # Destroys the working-time record, so re-check the password even
-            # though the session is already logged in.
-            emp = db.get_employee(int(request.form["id"]))
-            if emp is None:
-                flash("No such employee.", "error")
-            elif not db.verify_admin(request.form.get("password", "")):
-                flash(f"Wrong password — {emp['name']} was NOT deleted.", "error")
-            else:
-                db.delete_employee(emp["id"])
-                flash(f"Deleted {emp['name']} and all their punches, chips "
-                      f"and absences.", "ok")
         elif action == "active":
             db.set_active(int(request.form["id"]), request.form.get("active") == "1")
         elif action == "chip":
