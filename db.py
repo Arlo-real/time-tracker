@@ -147,6 +147,21 @@ def init_db():
                 workdays     TEXT NOT NULL,
                 PRIMARY KEY (employee_id, year, month)
             );
+            -- Optional per-employee sound played instead of the standard in/out
+            -- beep. The audio lives in the database on purpose: a backup is a
+            -- copy of this one file (see backup.py), so sounds kept as loose
+            -- files on the SD card would silently not be backed up and would
+            -- not come back on a restore. Stored already decoded, so the reader
+            -- never decodes anything mid-scan.
+            CREATE TABLE IF NOT EXISTS employee_sounds (
+                employee_id INTEGER NOT NULL REFERENCES employees(id),
+                direction   TEXT NOT NULL CHECK (direction IN ('in','out')),
+                filename    TEXT NOT NULL,   -- original name, shown in the UI
+                audio       BLOB NOT NULL,   -- mono 16-bit WAV, ready for aplay
+                seconds     REAL NOT NULL,
+                updated_at  TEXT NOT NULL,
+                PRIMARY KEY (employee_id, direction)
+            );
             CREATE TABLE IF NOT EXISTS admin_config (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -431,20 +446,76 @@ def get_employee(employee_id: int):
 
 def delete_employee(employee_id: int) -> None:
     """Delete an employee and everything belonging to them: punches, chips,
-    absences, monthly targets and any armed enrollment.
+    absences, monthly targets, absent profiles, custom sounds and any armed
+    enrollment.
 
     Irreversible, and it destroys the working-time record -- the caller is
     expected to have re-checked the admin password first. Children go before
     the parent because foreign_keys is ON, and it is one transaction so a
     failure part-way cannot leave an employee half-deleted.
+
+    Every table with an employee_id must be listed here: a missed one is not a
+    leak but a hard FOREIGN KEY failure that makes the employee undeletable.
     """
     with get_conn() as conn:
         conn.execute("DELETE FROM punches WHERE employee_id=?", (employee_id,))
         conn.execute("DELETE FROM chips WHERE employee_id=?", (employee_id,))
         conn.execute("DELETE FROM absences WHERE employee_id=?", (employee_id,))
         conn.execute("DELETE FROM monthly_targets WHERE employee_id=?", (employee_id,))
+        conn.execute("DELETE FROM absent_profiles WHERE employee_id=?", (employee_id,))
+        conn.execute("DELETE FROM employee_sounds WHERE employee_id=?", (employee_id,))
         conn.execute("DELETE FROM enroll_requests WHERE employee_id=?", (employee_id,))
         conn.execute("DELETE FROM employees WHERE id=?", (employee_id,))
+
+
+# ── custom in/out sounds (per employee) ───────────────────────────────────────
+
+def set_employee_sound(employee_id: int, direction: str, filename: str,
+                       audio: bytes, seconds: float) -> None:
+    """Store an employee's own clock-in/out sound, replacing any previous one.
+
+    ``audio`` must already be decoded to the format the reader plays -- see
+    buzzer.convert_to_wav, which is the only thing that should be producing it.
+    """
+    if direction not in ("in", "out"):
+        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO employee_sounds"
+            " (employee_id, direction, filename, audio, seconds, updated_at)"
+            " VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(employee_id, direction) DO UPDATE SET"
+            "   filename=excluded.filename, audio=excluded.audio,"
+            "   seconds=excluded.seconds, updated_at=excluded.updated_at",
+            (employee_id, direction, filename, audio, seconds, _now()))
+
+
+def clear_employee_sound(employee_id: int, direction: str) -> None:
+    """Drop a custom sound; the employee goes back to the standard beep."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM employee_sounds WHERE employee_id=? AND direction=?",
+                     (employee_id, direction))
+
+
+def get_employee_sound(employee_id: int, direction: str):
+    """The audio to play for this punch, or None to use the standard beep.
+    Called by the scan station on every recorded punch."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT audio, seconds, filename FROM employee_sounds"
+            " WHERE employee_id=? AND direction=?",
+            (employee_id, direction)).fetchone()
+
+
+def list_employee_sounds(employee_id: int) -> dict:
+    """{'in': row, 'out': row} for the admin UI. Deliberately does not select
+    the blob -- the page only needs the name, length and date, and pulling
+    megabytes of audio into a template render would be pure waste."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT direction, filename, seconds, updated_at, length(audio) AS bytes"
+            " FROM employee_sounds WHERE employee_id=?", (employee_id,)).fetchall()
+    return {r["direction"]: r for r in rows}
 
 
 def rename_employee(employee_id: int, name: str) -> None:

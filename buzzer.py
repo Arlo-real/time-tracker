@@ -15,17 +15,112 @@ Distinct patterns so the sound alone tells the employee what happened:
   * backup fail -> two mid-low buzzes  (USB stick present but backup failed)
   * error       -> one long low buzz  (unknown chip / failure)
   * alarm       -> three long low buzzes  (clock not trusted, nothing recorded)
+
+Employees can also have their own sound for clocking in/out, uploaded from the
+admin site; see ``convert_to_wav`` (upload side) and ``play_wav`` (reader side).
 """
 
+import io
+import os
 import struct
 import subprocess
 import sys
+import tempfile
 import wave
 
 _RATE = 44100          # samples per second
 # 0..1 peak. Tones are played one at a time and never summed, so a full-scale
 # square wave does not clip -- the small margin is for the DAC's sake.
 _AMPLITUDE = 0.95
+
+# ── custom per-employee sounds ────────────────────────────────────────────────
+
+# Uploads are decoded once, at upload time, into exactly this format, so the
+# reader never has to decode anything mid-scan -- it just pipes bytes to aplay.
+SOUND_RATE = 22050     # Hz. Far more bandwidth than a jack buzzer reproduces,
+                       # and half the bytes of 44.1k in every database backup.
+MAX_SOUND_SECONDS = 5.0  # Anything longer holds up the queue at the reader.
+
+
+class SoundError(Exception):
+    """An upload could not be turned into a playable sound.
+
+    The message is written to be shown to the admin as-is, so it says what to
+    do about it rather than what ffmpeg said.
+    """
+
+
+def _wav_seconds(wav: bytes) -> float:
+    """Read back a WAV we just produced, checking it is what we expect.
+
+    Verifying at upload time means a broken clip is refused while the admin is
+    standing there, instead of becoming silence at the reader weeks later.
+    """
+    try:
+        with wave.open(io.BytesIO(wav)) as w:
+            if w.getnchannels() != 1 or w.getsampwidth() != 2:
+                raise SoundError("Converted audio came out in the wrong format.")
+            return w.getnframes() / float(w.getframerate())
+    except wave.Error as e:
+        raise SoundError(f"Converted audio is unreadable ({e}).")
+
+
+def convert_to_wav(data: bytes, max_seconds: float = MAX_SOUND_SECONDS):
+    """Decode an uploaded audio file into the one format the reader plays.
+
+    Takes whatever the admin picked (MP3, WAV, OGG, M4A...) and returns
+    ``(wav_bytes, seconds)``: mono, 16-bit, SOUND_RATE, trimmed to max_seconds
+    and loudness-normalised. Doing this once here rather than at scan time keeps
+    the reader's job to "pipe bytes at aplay", and means an unplayable file is
+    caught by the person who chose it.
+
+    Raises SoundError with an admin-readable message.
+    """
+    if not data:
+        raise SoundError("That file is empty.")
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "upload")
+        dst = os.path.join(tmp, "out.wav")
+        with open(src, "wb") as f:
+            f.write(data)
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-i", src,
+            "-t", f"{max_seconds:g}",
+            "-ac", "1", "-ar", str(SOUND_RATE),
+            # People record clips at wildly different levels, and a quiet one is
+            # useless next to a noisy machine, so every upload is levelled to
+            # the same loudness -- "custom sound" must never mean "can't hear
+            # it". I=-5 is far hotter than the -14 used for music: this is a
+            # doorbell, not an album, and it has to hold its own against the
+            # built-in beeps (loud square waves). TP=-1.0 is a true-peak ceiling,
+            # so however hard we push, it cannot clip.
+            "-af", "loudnorm=I=-5:TP=-1.0:LRA=5",
+            "-c:a", "pcm_s16le", "-f", "wav", dst,
+        ]
+        try:
+            p = subprocess.run(cmd, capture_output=True, timeout=60)
+        except FileNotFoundError:
+            raise SoundError("ffmpeg is not installed — run: sudo apt install ffmpeg")
+        except subprocess.TimeoutExpired:
+            raise SoundError("That file took too long to convert; try a shorter clip.")
+        if p.returncode != 0 or not os.path.exists(dst):
+            raise SoundError("That file isn't audio we can read "
+                             "(try WAV, MP3, OGG, FLAC or M4A).")
+        with open(dst, "rb") as f:
+            wav = f.read()
+    seconds = _wav_seconds(wav)
+    if seconds <= 0:
+        raise SoundError("That file contains no audio.")
+    return wav, seconds
+
+
+def play_wav(wav: bytes, seconds: float) -> bool:
+    """Play an employee's own sound. Returns False if it did not play, so the
+    caller can fall back to the standard beep -- the sound is the employee's
+    only confirmation that the punch was stored, so a broken custom clip must
+    not turn into silence."""
+    return _play_bytes(wav, seconds + 3.0)
 
 
 def _tone_samples(freq, seconds):
@@ -54,7 +149,6 @@ def _tone_samples(freq, seconds):
 
 def _build_wav(segments):
     """segments: list of (freq_hz, seconds); freq 0 == silence. Returns WAV bytes."""
-    import io
     frames = bytearray()
     for freq, seconds in segments:
         if freq <= 0:
@@ -71,16 +165,15 @@ def _build_wav(segments):
     return buf.getvalue()
 
 
-def _play(segments):
-    """Play a sequence of tones, blocking until done. Never raises: audio
-    feedback must not take the scan station down."""
-    wav = _build_wav(segments)
-    # Hard timeout: this runs in the scan loop, so aplay blocking on a busy or
-    # misrouted audio device must never wedge the station. A few seconds is far
-    # longer than any pattern here (longest is the ~1.6s alarm).
-    budget = sum(seconds for _, seconds in segments) + 3.0
+def _play_bytes(wav, budget):
+    """Pipe WAV bytes to aplay, blocking until done. Returns True if it played.
+    Never raises: audio feedback must not take the scan station down.
+
+    The timeout is not optional -- this runs in the scan loop, so aplay blocking
+    on a busy or misrouted audio device would wedge the station for good.
+    """
     try:
-        subprocess.run(
+        p = subprocess.run(
             ["aplay", "-q"],
             input=wav,
             stdout=subprocess.DEVNULL,
@@ -88,6 +181,7 @@ def _play(segments):
             check=False,
             timeout=budget,
         )
+        return p.returncode == 0
     except subprocess.TimeoutExpired:
         print("[buzzer] aplay timed out; check audio routing (HDMI vs jack)",
               file=sys.stderr)
@@ -95,6 +189,15 @@ def _play(segments):
         print("[buzzer] aplay not found (install alsa-utils)", file=sys.stderr)
     except Exception as e:
         print(f"[buzzer] playback failed: {e}", file=sys.stderr)
+    return False
+
+
+def _play(segments):
+    """Play a sequence of tones, blocking until done."""
+    # A few seconds is far longer than any pattern here (longest is the ~1.6s
+    # alarm), so the budget only ever fires on a genuinely stuck device.
+    budget = sum(seconds for _, seconds in segments) + 3.0
+    return _play_bytes(_build_wav(segments), budget)
 
 
 def beep_startup():

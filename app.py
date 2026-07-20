@@ -16,12 +16,19 @@ from functools import wraps
 from flask import (Flask, session, request, redirect, url_for,
                    render_template, flash, abort, Response)
 
+import buzzer
 import db
 
 db.init_db()
 
+# Uploaded sounds are cut to a few seconds and re-encoded, so the stored audio
+# is small whatever arrives. This cap only stops someone feeding the Pi a whole
+# album before we get the chance to trim it.
+MAX_UPLOAD_MB = 16
+
 app = Flask(__name__)
 app.secret_key = db.get_secret_key()
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
 WEEKDAYS = list(zip(range(7), db.WEEKDAY_NAMES))
 MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
@@ -118,7 +125,9 @@ def employee_view(employee_id):
         year=year, month=month, summary=summary, weeks=weeks,
         prev_y=prev_y, prev_m=prev_m, next_y=next_y, next_m=next_m,
         workdays_csv=",".join(str(w) for w in sorted(summary["workdays"])),
-        chips=db.list_chips(employee_id))
+        chips=db.list_chips(employee_id),
+        sounds=db.list_employee_sounds(employee_id),
+        max_sound_seconds=buzzer.MAX_SOUND_SECONDS)
 
 
 @app.route("/employee/<int:employee_id>/target", methods=["POST"])
@@ -164,6 +173,64 @@ def set_profile(employee_id):
         flash("Absent profile turned off from this month on.", "ok")
     return redirect(url_for("employee_view", employee_id=employee_id,
                             year=year, month=month))
+
+
+# ── custom in/out sounds ──────────────────────────────────────────────────────
+
+@app.route("/employee/<int:employee_id>/sound", methods=["POST"])
+@login_required
+def set_sound(employee_id):
+    """Upload (or clear) an employee's own clock-in / clock-out sound."""
+    if db.get_employee(employee_id) is None:
+        abort(404)
+    direction = request.form.get("direction", "")
+    if direction not in ("in", "out"):
+        abort(400)
+    word = "welcome" if direction == "in" else "leaving"
+
+    if request.form.get("action") == "clear":
+        db.clear_employee_sound(employee_id, direction)
+        flash(f"Custom {word} sound removed — back to the standard beep.", "ok")
+        return redirect(url_for("employee_view", employee_id=employee_id))
+
+    f = request.files.get("sound")
+    if f is None or not f.filename:
+        flash("Pick an audio file first.", "error")
+        return redirect(url_for("employee_view", employee_id=employee_id))
+    try:
+        wav, seconds = buzzer.convert_to_wav(f.read())
+    except buzzer.SoundError as e:
+        # convert_to_wav writes its messages for this exact spot.
+        flash(str(e), "error")
+        return redirect(url_for("employee_view", employee_id=employee_id))
+    db.set_employee_sound(employee_id, direction, f.filename, wav, seconds)
+    extra = (f" (trimmed to {buzzer.MAX_SOUND_SECONDS:g}s)"
+             if seconds >= buzzer.MAX_SOUND_SECONDS else "")
+    flash(f"Custom {word} sound saved: {f.filename} — {seconds:.1f}s{extra}.", "ok")
+    return redirect(url_for("employee_view", employee_id=employee_id))
+
+
+@app.route("/employee/<int:employee_id>/sound/<direction>.wav")
+@login_required
+def sound_preview(employee_id, direction):
+    """Serve the stored audio so the admin can hear in the browser exactly what
+    the reader will play -- this is the converted file, not the upload."""
+    if direction not in ("in", "out"):
+        abort(404)
+    row = db.get_employee_sound(employee_id, direction)
+    if row is None:
+        abort(404)
+    return Response(row["audio"], mimetype="audio/wav")
+
+
+@app.errorhandler(413)
+def too_large(e):
+    """Flask aborts oversized uploads before our route runs, so the friendly
+    message has to happen here."""
+    flash(f"That file is too big (limit {MAX_UPLOAD_MB} MB). "
+          f"Only the first {buzzer.MAX_SOUND_SECONDS:g} seconds are used anyway "
+          f"— try a short clip.", "error")
+    return redirect(request.referrer or url_for("index"))
 
 
 @app.route("/employee/<int:employee_id>/absence", methods=["POST"])

@@ -181,6 +181,46 @@
     </form>
   </div>
 
+  <!-- custom scan sounds -->
+  <div class="card">
+    <h2>Scan sounds</h2>
+    <p class="muted" style="font-size:13px;">Play {{ emp['name'] }}'s own sound at
+      the reader instead of the standard beep. Any audio file (MP3, WAV, OGG,
+      M4A…); only the first {{ '%g'|format(max_sound_seconds) }} seconds are used
+      and the volume is levelled automatically.</p>
+
+    {% for direction, word in [('in', 'Welcome (clock in)'), ('out', 'Leaving (clock out)')] %}
+      {% set s = sounds.get(direction) %}
+      <div style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;">
+        <div><strong>{{ word }}</strong></div>
+        {% if s %}
+          <div class="muted" style="font-size:13px;margin:4px 0;">
+            {{ s['filename'] }} · {{ '%.1f'|format(s['seconds']) }}s ·
+            {{ (s['bytes'] / 1024)|round|int }} KB · added {{ s['updated_at'][:10] }}
+          </div>
+          <audio controls preload="none" style="width:100%;max-width:320px;"
+                 src="{{ url_for('sound_preview', employee_id=emp['id'], direction=direction) }}"></audio>
+          <form method="post" action="{{ url_for('set_sound', employee_id=emp['id']) }}"
+                style="display:inline-flex;gap:6px;margin-top:6px;">
+            <input type="hidden" name="direction" value="{{ direction }}">
+            <input type="hidden" name="action" value="clear">
+            <button class="danger" type="submit">Remove</button>
+          </form>
+        {% else %}
+          <div class="muted" style="font-size:13px;margin:4px 0;">
+            Standard beep — no custom sound.</div>
+        {% endif %}
+        <form method="post" enctype="multipart/form-data"
+              action="{{ url_for('set_sound', employee_id=emp['id']) }}"
+              style="display:inline-flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+          <input type="hidden" name="direction" value="{{ direction }}">
+          <input type="file" name="sound" accept="audio/*" required>
+          <button class="ghost" type="submit">{{ 'Replace' if s else 'Upload' }}</button>
+        </form>
+      </div>
+    {% endfor %}
+  </div>
+
   <!-- chips -->
   <div class="card">
     <h2>NFC chips</h2>

@@ -48,6 +48,23 @@ def _clock_watchdog():
         time.sleep(CLOCK_CHECK_SECONDS)
 
 
+def _confirm(res):
+    """Sound the confirmation for a stored punch: the employee's own sound if
+    they have one, otherwise the standard in/out beep.
+
+    Falls back to the beep whenever the custom sound doesn't play. That sound is
+    the employee's only evidence the punch was stored, so a bad clip must cost
+    them their nice noise -- never their confirmation.
+    """
+    try:
+        snd = db.get_employee_sound(res.employee_id, res.direction)
+        if snd is not None and buzzer.play_wav(snd["audio"], snd["seconds"]):
+            return
+    except Exception as e:
+        print(f"[main] custom sound failed for {res.name}: {e}", flush=True)
+    buzzer.beep_in() if res.direction == "in" else buzzer.beep_out()
+
+
 def handle(serial):
     """Record one scan and sound the matching buzzer feedback."""
     # Enrollment first, and deliberately not behind the clock gate: linking a
@@ -76,7 +93,7 @@ def handle(serial):
     if res.status == "recorded":
         # direction is decided by db.record_scan in the same transaction as the
         # insert, so it always matches the stored punch.
-        buzzer.beep_in() if res.direction == "in" else buzzer.beep_out()
+        _confirm(res)
     elif res.status == "ignored_duplicate":
         buzzer.beep_duplicate()
     else:  # unknown_chip or any unexpected status
