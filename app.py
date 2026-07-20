@@ -213,7 +213,9 @@ def set_profile(employee_id):
         if not raw:
             continue
         try:
-            h = float(raw)
+            # "3,25" is how a decimal gets typed here; a browser set to a
+            # German locale hands the comma straight through.
+            h = float(raw.replace(",", "."))
         except ValueError:
             flash(f"Ignored an invalid hours value for {db.WEEKDAY_NAMES[wd]}.",
                   "error")

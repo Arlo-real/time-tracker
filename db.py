@@ -1029,7 +1029,9 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
             # scanned -- worked_s from any punches is added to the totals below,
             # on top of this credit.
             category = "profile"
-            school_s = profile_hours[wd] * 3600
+            # Hours are a free decimal (3.25 = 3h15), so round to whole
+            # seconds here rather than letting a float run through the totals.
+            school_s = int(round(profile_hours[wd] * 3600))
             supposed_s = per_day_s
             totals["profile_s"] += school_s
             totals["profile_days"] += 1

@@ -147,7 +147,12 @@
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
       {% for i,name in WEEKDAYS %}
         <div><label class="muted">{{ name }}</label><br>
-          <input name="h{{ i }}" type="number" step="0.5" min="0" style="width:64px;"
+          {# text, not number: a number input in an English-locale browser
+             treats "3,25" as invalid and submits an empty string, which would
+             drop the entry silently. Text always reaches the server, so a bad
+             value comes back as a visible error instead. #}
+          <input name="h{{ i }}" type="text" inputmode="decimal" style="width:64px;"
+                 title="Hours, decimals allowed — 3.25 or 3,25 both mean 3h15"
                  value="{{ '%g'|format(summary.profile_hours[i]) if i in summary.profile_hours else '' }}"></div>
       {% endfor %}
       </div>
