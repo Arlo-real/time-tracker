@@ -79,6 +79,25 @@ for g in input audio dialout; do
   if getent group "$g" >/dev/null; then usermod -aG "$g" "$RUN_USER"; fi
 done
 
+# ── 2b. buzzer volume ─────────────────────────────────────────────────────────
+# The mixer control is not called the same thing on every card: the Pi's
+# headphone jack exposes 'PCM', while USB/HDMI cards usually have 'Master'.
+# Guessing wrong just prints "Unable to find simple control", so look first.
+echo "-- Setting the audio jack to full volume..."
+VOL_CTL=""
+for c in PCM Master Headphone Speaker; do
+  if amixer sget "$c" >/dev/null 2>&1; then VOL_CTL="$c"; break; fi
+done
+if [ -n "$VOL_CTL" ]; then
+  # 100%, not 90%: this drives a buzzer that has to be heard over a workshop,
+  # and on the Pi the scale is in dB -- 90% is -6.6dB, i.e. under half the
+  # amplitude of full. Turn it down here if it distorts on your hardware.
+  amixer -q sset "$VOL_CTL" 100% unmute 2>/dev/null || true
+  echo "   '$VOL_CTL' set to 100%."
+else
+  echo "!! No mixer control found; set the volume by hand (amixer scontrols)."
+fi
+
 # ── 3. initialise the database (owned by the run user) ────────────────────────
 echo "-- Initialising database..."
 sudo -u "$RUN_USER" "$PY" "$PROJECT_DIR/db.py"
@@ -178,7 +197,9 @@ echo "   then: systemctl restart timetracker-scan"
 echo " * Find your reader's device name with:"
 echo "     $PY -c \"from evdev import InputDevice,list_devices as l; [print(p, InputDevice(p).name) for p in l()]\""
 echo "   then set READER_DEVICE in /etc/systemd/system/timetracker-scan.service and daemon-reload."
-echo " * Plug the buzzer into the 3.5mm audio jack. Force jack output and set volume with:"
+echo " * Plug the buzzer into the 3.5mm audio jack, then force output to the jack:"
 echo "     sudo raspi-config nonint do_audio 1   # 1 = headphones/jack"
-echo "     amixer set Master 90%"
+echo "   Volume was set above via '${VOL_CTL:-<none found>}'. To change it later:"
+echo "     amixer sset ${VOL_CTL:-PCM} 100%      # 'amixer scontrols' lists the controls"
+echo "     alsamixer                             # or set it interactively"
 echo "   Test the tones with:  python3 $PROJECT_DIR/buzzer.py"

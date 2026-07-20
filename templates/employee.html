@@ -19,6 +19,12 @@
       <a class="btn ghost" href="?year={{next_y}}&month={{next_m}}">Next →</a>
     </div>
   </div>
+  <form method="post" action="{{ url_for('rename_employee', employee_id=emp['id'], year=year, month=month) }}"
+        style="display:flex;gap:6px;margin-top:12px;align-items:end;">
+    <div><label class="muted">Name</label><br>
+      <input name="name" value="{{ emp['name'] }}" required></div>
+    <button class="ghost" type="submit">Rename</button>
+  </form>
   {% if not summary.configured %}
   <p class="flash error" style="margin-top:12px;">No monthly target set for this month yet — hours below assume 0. Set it under “Monthly target”.</p>
   {% endif %}
@@ -36,6 +42,8 @@
          <div class="muted">{{ t.vacation_days }} days</div></div>
     <div><div class="muted">Sick</div><strong>{{ t.sick_s|hm }}</strong>
          <div class="muted">{{ t.sick_days }} days</div></div>
+    <div><div class="muted">School (credited)</div><strong>{{ t.profile_s|hm }}</strong>
+         <div class="muted">{{ t.profile_days }} days</div></div>
     <div><div class="muted">Holiday / closed</div>
          <strong>{{ t.holiday_days }} / {{ t.closed_days }}</strong>
          <div class="muted">days off</div></div>
@@ -61,7 +69,7 @@
             <div><a href="{{ url_for('day_view', employee_id=emp['id'], day=cell.date) }}"
                     style="text-decoration:none;color:var(--ink);"><span class="dnum">{{ day }}</span></a>
                  {% if cell.category != 'work' and cell.category != 'off' %}
-                 <span class="pill {{ cell.category }}">{{ cell.category }}</span>{% endif %}</div>
+                 <span class="pill {{ cell.category }}">{{ 'school' if cell.category == 'profile' else cell.category }}</span>{% endif %}</div>
             {% if cell.worked_s or cell.supposed_s %}
               <div class="muted sub">
                 {{ cell.worked_s|hm }}{% if cell.supposed_s %} / {{ cell.supposed_s|hm }}{% endif %}
@@ -90,18 +98,20 @@
   <table>
     <thead><tr><th>Date</th><th>Day</th><th>Type</th><th>In</th><th>Out</th>
       <th class="right">Pause</th><th class="right">Worked</th>
+      <th class="right">School</th>
       <th class="right">Supposed</th><th>Via</th><th></th></tr></thead>
     <tbody>
     {% for r in summary.rows %}
       <tr {% if r.category == 'off' %}style="background:var(--off);"{% endif %}>
         <td>{{ r.date[8:10] }}.{{ r.date[5:7] }}</td>
         <td class="muted">{{ r.weekday }}</td>
-        <td>{% if r.category != 'off' %}<span class="pill {{ r.category }}">{{ r.category }}</span>{% endif %}
+        <td>{% if r.category != 'off' %}<span class="pill {{ r.category }}">{{ 'school' if r.category == 'profile' else r.category }}</span>{% endif %}
             {% if r.note %}<span class="muted">{{ r.note }}</span>{% endif %}</td>
         <td>{{ r.in_time }}</td>
         <td>{{ r.out_time }}{% if r.incomplete %}<span style="color:var(--bad)"> ⚠</span>{% endif %}</td>
         <td class="right">{{ r.pause_s|hm if r.pause_s else '' }}</td>
         <td class="right">{{ r.worked_s|hm if r.worked_s else '' }}</td>
+        <td class="right">{{ r.school_s|hm if r.school_s else '' }}</td>
         <td class="right">{{ r.supposed_s|hm if r.supposed_s else '' }}</td>
         <td class="muted">{{ r.methods|join(', ') }}</td>
         <td><a href="{{ url_for('day_view', employee_id=emp['id'], day=r.date) }}">edit</a></td>
@@ -132,12 +142,12 @@
     </form>
   </div>
 
-  <!-- absent profile (home office etc.) -->
+  <!-- school time (credited without scanning) -->
   <div class="card">
-    <h2>Absent profile — {{ MONTH_NAMES[month] }} {{ year }}</h2>
+    <h2>School time — {{ MONTH_NAMES[month] }} {{ year }}</h2>
     <p class="muted" style="font-size:13px;">Days credited <em>without scanning</em>,
-      e.g. home office. Any time they <em>do</em> scan on such a day is added on
-      top of this credit.</p>
+      e.g. vocational school. Any time they <em>do</em> scan on such a day is added
+      on top of this credit.</p>
     <form method="post" action="{{ url_for('set_profile', employee_id=emp['id'], year=year, month=month) }}">
       <p>Hours credited per weekday <span class="muted">(blank or 0 = none)</span>:</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -149,7 +159,7 @@
       </div>
       <p style="margin-top:10px;"><label>Label<br>
         <input name="label" value="{{ summary.profile_label }}"
-               placeholder="e.g. Home office"></label></p>
+               placeholder="e.g. Vocational school"></label></p>
       <p class="muted" style="font-size:13px;">
         {% if summary.profile_hours %}
           This month: {{ t.profile_days }} day(s) → {{ t.profile_s|hm }} credited.
@@ -157,7 +167,7 @@
           Off. Enter hours on one or more weekdays to enable.
         {% endif %}
         Carries into later months until you change it.</p>
-      <button type="submit">Save profile</button>
+      <button type="submit">Save school time</button>
     </form>
   </div>
 
@@ -182,23 +192,30 @@
   </div>
 
   <!-- custom scan sounds -->
-  <div class="card">
+  <div class="card" id="sounds">
     <h2>Scan sounds</h2>
     <p class="muted" style="font-size:13px;">Play {{ emp['name'] }}'s own sound at
-      the reader instead of the standard beep. Any audio file (MP3, WAV, OGG,
-      M4A…); only the first {{ '%g'|format(max_sound_seconds) }} seconds are used
-      and the volume is levelled automatically.</p>
+      the reader instead of the standard beep. Upload any audio file (MP3, WAV,
+      OGG, M4A…). Leave start and end empty to use the whole file, or set them to
+      play just one part of it — up to {{ '%g'|format(max_clip_seconds) }}s.
+      The volume is levelled automatically. Only the part you choose is kept, so
+      to change it, upload the file again with different times.</p>
 
     {% for direction, word in [('in', 'Welcome (clock in)'), ('out', 'Leaving (clock out)')] %}
       {% set s = sounds.get(direction) %}
-      <div style="border-top:1px solid var(--line);padding-top:10px;margin-top:10px;">
+      <div style="border-top:1px solid var(--line);padding-top:12px;margin-top:12px;">
         <div><strong>{{ word }}</strong></div>
+
         {% if s %}
           <div class="muted" style="font-size:13px;margin:4px 0;">
-            {{ s['filename'] }} · {{ '%.1f'|format(s['seconds']) }}s ·
-            {{ (s['bytes'] / 1024)|round|int }} KB · added {{ s['updated_at'][:10] }}
+            {{ s['filename'] }} · {{ '%.1f'|format(s['seconds']) }}s
+            {%- if s['seconds'] < s['source_seconds'] - 0.05 %}
+              ({{ '%.2f'|format(s['start_s']) }}s–{{ '%.2f'|format(s['end_s']) }}s
+              of {{ '%.1f'|format(s['source_seconds']) }}s)
+            {%- else %} (whole file){% endif %} ·
+            {{ (s['bytes'] / 1024)|round|int }} KB · {{ s['updated_at'][:10] }}
           </div>
-          <audio controls preload="none" style="width:100%;max-width:320px;"
+          <audio controls preload="none" style="width:100%;max-width:340px;"
                  src="{{ url_for('sound_preview', employee_id=emp['id'], direction=direction) }}"></audio>
           <form method="post" action="{{ url_for('set_sound', employee_id=emp['id']) }}"
                 style="display:inline-flex;gap:6px;margin-top:6px;">
@@ -210,12 +227,28 @@
           <div class="muted" style="font-size:13px;margin:4px 0;">
             Standard beep — no custom sound.</div>
         {% endif %}
+
         <form method="post" enctype="multipart/form-data"
               action="{{ url_for('set_sound', employee_id=emp['id']) }}"
-              style="display:inline-flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+              style="margin-top:10px;">
           <input type="hidden" name="direction" value="{{ direction }}">
-          <input type="file" name="sound" accept="audio/*" required>
-          <button class="ghost" type="submit">{{ 'Replace' if s else 'Upload' }}</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+            <div>
+              <label class="muted">Audio file</label><br>
+              <input type="file" name="sound" accept="audio/*" required>
+            </div>
+            <div>
+              <label class="muted">Start (s)</label><br>
+              <input name="start_s" type="number" step="0.01" min="0"
+                     placeholder="0" style="width:84px;">
+            </div>
+            <div>
+              <label class="muted">End (s)</label><br>
+              <input name="end_s" type="number" step="0.01" min="0"
+                     placeholder="end" style="width:84px;">
+            </div>
+            <button class="ghost" type="submit">{{ 'Replace' if s else 'Upload' }}</button>
+          </div>
         </form>
       </div>
     {% endfor %}

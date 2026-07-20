@@ -17,7 +17,8 @@ Distinct patterns so the sound alone tells the employee what happened:
   * alarm       -> three long low buzzes  (clock not trusted, nothing recorded)
 
 Employees can also have their own sound for clocking in/out, uploaded from the
-admin site; see ``convert_to_wav`` (upload side) and ``play_wav`` (reader side).
+admin site and cut to a chosen start/end: see ``make_clip`` (upload side) and
+``play_wav`` (reader side).
 """
 
 import io
@@ -34,12 +35,20 @@ _RATE = 44100          # samples per second
 _AMPLITUDE = 0.95
 
 # ── custom per-employee sounds ────────────────────────────────────────────────
+#
+# An upload is cut to the chosen start/end once, here, and only that clip is
+# kept -- decoded to exactly what aplay wants. The reader does no decoding and
+# no trimming mid-scan; it pipes those bytes and nothing else. Nothing of the
+# original survives, so changing the selection means uploading the file again.
 
-# Uploads are decoded once, at upload time, into exactly this format, so the
-# reader never has to decode anything mid-scan -- it just pipes bytes to aplay.
-SOUND_RATE = 22050     # Hz. Far more bandwidth than a jack buzzer reproduces,
-                       # and half the bytes of 44.1k in every database backup.
-MAX_SOUND_SECONDS = 5.0  # Anything longer holds up the queue at the reader.
+# Playback format. Far more bandwidth than a jack buzzer reproduces, and half
+# the bytes of 44.1k in every database backup.
+SOUND_RATE = 22050
+
+# Ceiling on the chosen window -- not a fixed cut. It exists because the reader
+# plays the clip synchronously: a punch cannot be confirmed until the sound
+# finishes, so a really long clip would hold up the queue at shift change.
+MAX_CLIP_SECONDS = 30.0
 
 
 class SoundError(Exception):
@@ -65,54 +74,126 @@ def _wav_seconds(wav: bytes) -> float:
         raise SoundError(f"Converted audio is unreadable ({e}).")
 
 
-def convert_to_wav(data: bytes, max_seconds: float = MAX_SOUND_SECONDS):
-    """Decode an uploaded audio file into the one format the reader plays.
+def _ffmpeg(args, tmp, out_name, timeout=120):
+    """Run one ffmpeg conversion inside tmp and return the output bytes.
 
-    Takes whatever the admin picked (MP3, WAV, OGG, M4A...) and returns
-    ``(wav_bytes, seconds)``: mono, 16-bit, SOUND_RATE, trimmed to max_seconds
-    and loudness-normalised. Doing this once here rather than at scan time keeps
-    the reader's job to "pipe bytes at aplay", and means an unplayable file is
-    caught by the person who chose it.
+    Centralises the failure modes so every caller reports them the same way,
+    in words meant for the admin rather than for a log.
+    """
+    dst = os.path.join(tmp, out_name)
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y"] \
+        + args + [dst]
+    try:
+        p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except FileNotFoundError:
+        raise SoundError("ffmpeg is not installed — run: sudo apt install ffmpeg")
+    except subprocess.TimeoutExpired:
+        raise SoundError("That file took too long to convert; try a shorter one.")
+    if p.returncode != 0 or not os.path.exists(dst) or os.path.getsize(dst) == 0:
+        raise SoundError("That file isn't audio we can read "
+                         "(try WAV, MP3, OGG, FLAC or M4A).")
+    with open(dst, "rb") as f:
+        return f.read()
+
+
+def audio_duration(data: bytes) -> float:
+    """Length in seconds of an encoded audio blob, via ffprobe."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "probe")
+        with open(path, "wb") as f:
+            f.write(data)
+        try:
+            p = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=nw=1:nk=1", path],
+                capture_output=True, timeout=30)
+        except FileNotFoundError:
+            raise SoundError("ffprobe is not installed — run: sudo apt install ffmpeg")
+        except subprocess.TimeoutExpired:
+            raise SoundError("Could not read that file's length.")
+        try:
+            return float(p.stdout.decode().strip())
+        except ValueError:
+            raise SoundError("That file isn't audio we can read "
+                             "(try WAV, MP3, OGG, FLAC or M4A).")
+
+
+def make_clip(data: bytes, start=0.0, end=None):
+    """Turn an upload into the single clip the reader plays.
+
+    Cuts ``start``..``end`` (seconds) out of whatever the admin uploaded and
+    returns ``(wav_bytes, seconds, source_seconds)``: mono, 16-bit, SOUND_RATE,
+    loudness-levelled and faded at both ends. ``end=None`` means "from start,
+    up to the maximum clip length".
+
+    All the work happens here, once, so the reader's job stays "pipe bytes at
+    aplay" and an unplayable file is caught by the person who chose it.
 
     Raises SoundError with an admin-readable message.
     """
     if not data:
         raise SoundError("That file is empty.")
+    source_seconds = audio_duration(data)
+    if source_seconds <= 0:
+        raise SoundError("That file contains no audio.")
+
+    start = max(0.0, float(start))
+    if start >= source_seconds:
+        raise SoundError(
+            f"The start ({start:g}s) is past the end of that file, which is "
+            f"only {source_seconds:.1f}s long.")
+    if end is None:
+        # No end given: take what is there, up to the maximum.
+        end = min(source_seconds, start + MAX_CLIP_SECONDS)
+    else:
+        # Clamp to the file rather than reject: an end a hair past the real
+        # length (rounding, or a time read off another player) isn't an error.
+        end = min(float(end), source_seconds)
+    if end <= start:
+        raise SoundError("The end has to come after the start.")
+    length = end - start
+    if length > MAX_CLIP_SECONDS:
+        # Asked for explicitly, so say no rather than quietly giving them
+        # something other than what the form shows.
+        raise SoundError(
+            f"That selection is {length:.1f}s — the longest a scan sound can be "
+            f"is {MAX_CLIP_SECONDS:g}s, because the reader waits for it to "
+            f"finish before the next person can scan.")
+    # A cut lands mid-waveform at both ends, which is an audible click on a
+    # buzzer. 20ms in and out is inaudible as a fade but removes the click.
+    fade = min(0.02, length / 4.0)
     with tempfile.TemporaryDirectory() as tmp:
         src = os.path.join(tmp, "upload")
-        dst = os.path.join(tmp, "out.wav")
         with open(src, "wb") as f:
             f.write(data)
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        wav = _ffmpeg([
             "-i", src,
-            "-t", f"{max_seconds:g}",
             "-ac", "1", "-ar", str(SOUND_RATE),
             # People record clips at wildly different levels, and a quiet one is
-            # useless next to a noisy machine, so every upload is levelled to
-            # the same loudness -- "custom sound" must never mean "can't hear
-            # it". I=-5 is far hotter than the -14 used for music: this is a
-            # doorbell, not an album, and it has to hold its own against the
-            # built-in beeps (loud square waves). TP=-1.0 is a true-peak ceiling,
-            # so however hard we push, it cannot clip.
-            "-af", "loudnorm=I=-5:TP=-1.0:LRA=5",
-            "-c:a", "pcm_s16le", "-f", "wav", dst,
-        ]
-        try:
-            p = subprocess.run(cmd, capture_output=True, timeout=60)
-        except FileNotFoundError:
-            raise SoundError("ffmpeg is not installed — run: sudo apt install ffmpeg")
-        except subprocess.TimeoutExpired:
-            raise SoundError("That file took too long to convert; try a shorter clip.")
-        if p.returncode != 0 or not os.path.exists(dst):
-            raise SoundError("That file isn't audio we can read "
-                             "(try WAV, MP3, OGG, FLAC or M4A).")
-        with open(dst, "rb") as f:
-            wav = f.read()
+            # useless next to a noisy machine, so every clip is levelled to the
+            # same loudness -- "custom sound" must never mean "can't hear it".
+            # I=-5 is far hotter than the -14 used for music: this is a doorbell,
+            # not an album, and it has to hold its own against the built-in beeps
+            # (loud square waves). TP=-1.0 is a true-peak ceiling, so however
+            # hard we push, it cannot clip.
+            # The cut happens inside the filter chain, not with -ss/-to, and
+            # asetpts immediately after it is what makes the fades work: a clip
+            # taken from 5s in still carries timestamps starting at 5, while
+            # afade's st= counts from zero on the timeline. Left unrebased, the
+            # fade-out fires before the clip begins and silences it completely
+            # -- and only for clips that don't start at 0, so it looks fine
+            # right up until someone picks a later part of the file.
+            "-af", f"atrim=start={start:g}:end={end:g},"
+                   f"asetpts=PTS-STARTPTS,"
+                   f"loudnorm=I=-5:TP=-1.0:LRA=5,"
+                   f"afade=t=in:st=0:d={fade:g},"
+                   f"afade=t=out:st={max(0.0, length - fade):g}:d={fade:g}",
+            "-c:a", "pcm_s16le", "-f", "wav",
+        ], tmp, "clip.wav")
     seconds = _wav_seconds(wav)
     if seconds <= 0:
-        raise SoundError("That file contains no audio.")
-    return wav, seconds
+        raise SoundError("That selection came out empty — try a longer one.")
+    return wav, seconds, source_seconds
 
 
 def play_wav(wav: bytes, seconds: float) -> bool:

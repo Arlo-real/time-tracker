@@ -18,6 +18,29 @@
 </div>
 
 <div class="card">
+  <h2>Closed period</h2>
+  <p class="muted">Several days at once, e.g. a shutdown week or the days between
+    Christmas and New Year. Every day in the range is marked, weekends included —
+    they had no supposed hours anyway.</p>
+  <form method="post" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+    <input type="hidden" name="action" value="add_range">
+    <div><label class="muted">From</label><br>
+      <input name="start" type="date" required></div>
+    <div><label class="muted">To</label><br>
+      <input name="end" type="date" required></div>
+    <div><label class="muted">Type</label><br>
+      <select name="kind">
+        <option value="closed">Work closed</option>
+        <option value="holiday">National holiday</option>
+        <option value="none">Clear these days</option>
+      </select></div>
+    <div style="flex:1;min-width:160px;"><label class="muted">Label</label><br>
+      <input name="label" placeholder="e.g. Summer shutdown" style="width:100%"></div>
+    <button type="submit">Apply to range</button>
+  </form>
+</div>
+
+<div class="card">
   <h2>Every year</h2>
   <p class="muted">Repeat on the same calendar day every year, e.g. 24.12. A
     single date added above overrides the yearly rule for that year only.</p>

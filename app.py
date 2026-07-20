@@ -8,7 +8,6 @@ Default password is 'admin' -- change it under Settings on first login.
 import io
 import csv
 import re
-import zipfile
 import calendar
 from datetime import date, datetime
 from functools import wraps
@@ -127,7 +126,23 @@ def employee_view(employee_id):
         workdays_csv=",".join(str(w) for w in sorted(summary["workdays"])),
         chips=db.list_chips(employee_id),
         sounds=db.list_employee_sounds(employee_id),
-        max_sound_seconds=buzzer.MAX_SOUND_SECONDS)
+        max_clip_seconds=buzzer.MAX_CLIP_SECONDS)
+
+
+@app.route("/employee/<int:employee_id>/rename", methods=["POST"])
+@login_required
+def rename_employee(employee_id):
+    if db.get_employee(employee_id) is None:
+        abort(404)
+    name = request.form.get("name", "").strip()
+    if not name:
+        flash("The name can't be empty.", "error")
+    else:
+        db.rename_employee(employee_id, name)
+        flash(f"Renamed to {name}.", "ok")
+    year, month = month_arg()
+    return redirect(url_for("employee_view", employee_id=employee_id,
+                            year=year, month=month))
 
 
 @app.route("/employee/<int:employee_id>/target", methods=["POST"])
@@ -148,9 +163,14 @@ def set_target(employee_id):
 @app.route("/employee/<int:employee_id>/profile", methods=["POST"])
 @login_required
 def set_profile(employee_id):
-    """Absent profile: hours credited per weekday without scanning (home
-    office), e.g. 5h Mon and 2h Tue. Set per month; carries forward until
-    changed."""
+    """School time: hours credited per weekday without scanning (vocational
+    school), e.g. 5h Mon and 2h Tue. Set per month; carries forward until
+    changed.
+
+    The route and the storage still say "profile" -- renaming the tables and
+    URLs would be churn for a wording change, and the stored data is the same
+    thing either way.
+    """
     year, month = month_arg()
     hours_by_weekday = {}
     for wd in range(7):
@@ -168,53 +188,83 @@ def set_profile(employee_id):
     db.set_absent_profile(employee_id, year, month, hours_by_weekday,
                           request.form.get("label", "").strip())
     if hours_by_weekday:
-        flash("Absent profile saved.", "ok")
+        flash("School time saved.", "ok")
     else:
-        flash("Absent profile turned off from this month on.", "ok")
+        flash("School time turned off from this month on.", "ok")
     return redirect(url_for("employee_view", employee_id=employee_id,
                             year=year, month=month))
 
 
 # ── custom in/out sounds ──────────────────────────────────────────────────────
 
+def _sound_word(direction):
+    return "welcome" if direction == "in" else "leaving"
+
+
+def _back_to_sounds(employee_id):
+    """Return to the Scan sounds card rather than the top of a long page."""
+    return redirect(url_for("employee_view", employee_id=employee_id) + "#sounds")
+
+
 @app.route("/employee/<int:employee_id>/sound", methods=["POST"])
 @login_required
 def set_sound(employee_id):
-    """Upload (or clear) an employee's own clock-in / clock-out sound."""
+    """Upload, re-trim, or clear an employee's own clock-in / clock-out sound."""
     if db.get_employee(employee_id) is None:
         abort(404)
     direction = request.form.get("direction", "")
     if direction not in ("in", "out"):
         abort(400)
-    word = "welcome" if direction == "in" else "leaving"
+    word = _sound_word(direction)
 
     if request.form.get("action") == "clear":
         db.clear_employee_sound(employee_id, direction)
         flash(f"Custom {word} sound removed — back to the standard beep.", "ok")
-        return redirect(url_for("employee_view", employee_id=employee_id))
+        return _back_to_sounds(employee_id)
 
     f = request.files.get("sound")
     if f is None or not f.filename:
         flash("Pick an audio file first.", "error")
-        return redirect(url_for("employee_view", employee_id=employee_id))
+        return _back_to_sounds(employee_id)
+
+    # Blank start/end means the whole file -- the trim is optional, not a step
+    # you have to fill in to upload something short.
     try:
-        wav, seconds = buzzer.convert_to_wav(f.read())
+        start = _seconds_field(request.form, "start_s", default=0.0)
+        end = _seconds_field(request.form, "end_s", default=None)
+    except ValueError:
+        flash("Start and end have to be numbers, in seconds (or left empty).",
+              "error")
+        return _back_to_sounds(employee_id)
+
+    try:
+        wav, seconds, source_seconds = buzzer.make_clip(f.read(), start, end)
     except buzzer.SoundError as e:
-        # convert_to_wav writes its messages for this exact spot.
+        # buzzer writes its messages for this exact spot.
         flash(str(e), "error")
-        return redirect(url_for("employee_view", employee_id=employee_id))
-    db.set_employee_sound(employee_id, direction, f.filename, wav, seconds)
-    extra = (f" (trimmed to {buzzer.MAX_SOUND_SECONDS:g}s)"
-             if seconds >= buzzer.MAX_SOUND_SECONDS else "")
-    flash(f"Custom {word} sound saved: {f.filename} — {seconds:.1f}s{extra}.", "ok")
-    return redirect(url_for("employee_view", employee_id=employee_id))
+        return _back_to_sounds(employee_id)
+
+    end = start + seconds
+    db.set_employee_sound(employee_id, direction, f.filename,
+                          start, end, source_seconds, wav, seconds)
+    msg = f"Custom {word} sound saved: {f.filename} — plays {seconds:.1f}s"
+    if seconds < source_seconds - 0.05:
+        msg += f" ({start:.2f}s–{end:.2f}s of {source_seconds:.1f}s)"
+    flash(msg + ".", "ok")
+    return _back_to_sounds(employee_id)
+
+
+def _seconds_field(form, field, default):
+    """A time in seconds from the form, or ``default`` if the box was left
+    empty. Raises ValueError if it isn't a number."""
+    raw = (form.get(field, "") or "").strip()
+    return default if not raw else float(raw)
 
 
 @app.route("/employee/<int:employee_id>/sound/<direction>.wav")
 @login_required
 def sound_preview(employee_id, direction):
-    """Serve the stored audio so the admin can hear in the browser exactly what
-    the reader will play -- this is the converted file, not the upload."""
+    """The clip as the reader will play it -- already cut, levelled and faded."""
     if direction not in ("in", "out"):
         abort(404)
     row = db.get_employee_sound(employee_id, direction)
@@ -228,8 +278,8 @@ def too_large(e):
     """Flask aborts oversized uploads before our route runs, so the friendly
     message has to happen here."""
     flash(f"That file is too big (limit {MAX_UPLOAD_MB} MB). "
-          f"Only the first {buzzer.MAX_SOUND_SECONDS:g} seconds are used anyway "
-          f"— try a short clip.", "error")
+          f"At most {buzzer.MAX_CLIP_SECONDS:g}s of it is used anyway "
+          f"— try a shorter file.", "error")
     return redirect(request.referrer or url_for("index"))
 
 
@@ -321,6 +371,22 @@ def special_days():
             db.remove_special_day(request.form.get("date", ""))
         elif action == "delete_recurring":
             db.remove_recurring_special_day(request.form.get("md", ""))
+        elif action == "add_range":
+            # A shutdown week, works holiday, etc. -- stored as one row per day.
+            start = request.form.get("start", "")
+            end = request.form.get("end", "") or start
+            try:
+                datetime.strptime(start, "%Y-%m-%d")
+                datetime.strptime(end, "%Y-%m-%d")
+            except ValueError:
+                flash("Pick a valid start and end date.", "error")
+                return redirect(url_for("special_days"))
+            kind = request.form.get("kind", "closed")
+            if kind in ("closed", "holiday", "none"):
+                n = db.set_special_day_range(start, end, kind,
+                                             request.form.get("label", ""))
+                verb = "cleared" if kind == "none" else f"marked {kind}"
+                flash(f"{n} day(s) {verb}.", "ok")
         elif action == "add_recurring":
             try:
                 db.set_recurring_special_day(
@@ -366,8 +432,6 @@ def employees():
             name = request.form.get("name", "").strip()
             if name:
                 db.add_employee(name)
-        elif action == "rename":
-            db.rename_employee(int(request.form["id"]), request.form.get("name", "").strip())
         elif action == "delete":
             # Destroys the working-time record, so re-check the password even
             # though the session is already logged in.
@@ -423,65 +487,18 @@ def settings():
     return render_template("settings.html")
 
 
-# ── CSV export (all employees) ────────────────────────────────────────────────
+# ── per-employee monthly CSV ──────────────────────────────────────────────────
+#
+# The only export. Whole-company and whole-year exports used to live here too;
+# they were dropped because this is the one anybody actually opens, and each
+# extra variant was another place the column list had to be kept in step.
 
-EXPORT_HEADER = ["Employee", "Year", "Month", "Worked h", "Supposed h",
-                 "Vacation h", "Sick h", "Balance h", "Worked days",
-                 "Supposed days", "Sick days", "Vacation days", "Holiday days",
-                 "Closed days", "Target h"]
+DETAIL_HEADER = ["Date", "Weekday", "Type", "In", "Out", "Pause h",
+                 "Worked h", "School h", "Supposed h", "Via", "Note"]
 
 
 def _h(seconds):
     return round((seconds or 0) / 3600, 2)
-
-
-def _summary_row(emp, year, month):
-    s = db.month_summary(emp["id"], year, month)
-    t = s["totals"]
-    return [emp["name"], year, month, _h(t["worked_s"]), _h(t["supposed_s"]),
-            _h(t["vacation_s"]), _h(t["sick_s"]), _h(t["balance_s"]),
-            t["worked_days"], t["supposed_days"], t["sick_days"],
-            t["vacation_days"], t["holiday_days"], t["closed_days"],
-            round(s["target_hours"], 2)]
-
-
-def _csv_response(rows, filename):
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(EXPORT_HEADER)
-    w.writerows(rows)
-    return Response(buf.getvalue(), mimetype="text/csv",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
-
-
-@app.route("/export")
-@login_required
-def export_page():
-    return render_template("export.html", this_year=date.today().year,
-                           this_month=date.today().month)
-
-
-@app.route("/export/month.csv")
-@login_required
-def export_month():
-    year, month = month_arg()
-    rows = [_summary_row(e, year, month) for e in db.list_employees()]
-    return _csv_response(rows, f"attendance_{year}-{month:02d}.csv")
-
-
-@app.route("/export/year.csv")
-@login_required
-def export_year():
-    year, _ = month_arg()
-    rows = [_summary_row(e, year, m)
-            for e in db.list_employees() for m in range(1, 13)]
-    return _csv_response(rows, f"attendance_{year}.csv")
-
-
-# ── detailed per-employee CSV (one file per employee per month) ───────────────
-
-DETAIL_HEADER = ["Date", "Weekday", "Type", "In", "Out", "Pause h",
-                 "Worked h", "Supposed h", "Via", "Note"]
 
 
 def _safe(name):
@@ -498,11 +515,12 @@ def _detail_csv(emp, year, month):
     w.writerow(DETAIL_HEADER)
     for r in s["rows"]:
         w.writerow([r.date, r.weekday, r.category, r.in_time, r.out_time,
-                    _h(r.pause_s), _h(r.worked_s), _h(r.supposed_s),
-                    " ".join(r.methods), r.note])
+                    _h(r.pause_s), _h(r.worked_s), _h(r.school_s),
+                    _h(r.supposed_s), " ".join(r.methods), r.note])
     w.writerow([])
     w.writerow(["Worked h", _h(t["worked_s"]), "Supposed h", _h(t["supposed_s"])])
     w.writerow(["Vacation h", _h(t["vacation_s"]), "Sick h", _h(t["sick_s"])])
+    w.writerow(["School h", _h(t["profile_s"]), "School days", t["profile_days"]])
     w.writerow(["Balance h", _h(t["balance_s"]),
                 "Worked days", t["worked_days"], "Supposed days", t["supposed_days"]])
     return buf.getvalue()
@@ -519,43 +537,3 @@ def export_employee_month(employee_id):
     fn = f"{_safe(emp['name'])}_{year}-{month:02d}.csv"
     return Response(text, mimetype="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{fn}"'})
-
-
-def _zip_response(files, filename):
-    """files: list of (path_in_zip, text_content)."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for path, text in files:
-            z.writestr(path, text)
-    return Response(buf.getvalue(), mimetype="application/zip",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
-
-
-@app.route("/export/detailed-month.zip")
-@login_required
-def export_detailed_month():
-    year, month = month_arg()
-    files = [(f"{_safe(e['name'])}_{year}-{month:02d}.csv",
-              _detail_csv(e, year, month)) for e in db.list_employees()]
-    return _zip_response(files, f"attendance_detailed_{year}-{month:02d}.zip")
-
-
-@app.route("/export/detailed-year.zip")
-@login_required
-def export_detailed_year():
-    year, _ = month_arg()
-    files = [(f"{year}-{m:02d}/{_safe(e['name'])}.csv", _detail_csv(e, year, m))
-             for m in range(1, 13) for e in db.list_employees()]
-    return _zip_response(files, f"attendance_detailed_{year}.zip")
-
-
-if __name__ == "__main__":
-    host, port = "0.0.0.0", 8080
-    try:
-        from waitress import serve
-        print(f"Serving admin site on http://{host}:{port}  (waitress)")
-        serve(app, host=host, port=port, threads=8)
-    except ImportError:
-        print("waitress not installed — using Flask's dev server "
-              "(ok for local use; `apt install python3-waitress` for production).")
-        app.run(host=host, port=port, debug=False)

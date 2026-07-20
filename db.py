@@ -68,6 +68,7 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         _drop_legacy_absent_profiles(conn)
+        _drop_legacy_employee_sounds(conn)
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS employees (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,8 +158,16 @@ def init_db():
                 employee_id INTEGER NOT NULL REFERENCES employees(id),
                 direction   TEXT NOT NULL CHECK (direction IN ('in','out')),
                 filename    TEXT NOT NULL,   -- original name, shown in the UI
-                audio       BLOB NOT NULL,   -- mono 16-bit WAV, ready for aplay
-                seconds     REAL NOT NULL,
+                -- Which part of the upload was taken, and how long the upload
+                -- was. Kept for the UI only -- the original is not stored, so
+                -- a different selection means uploading the file again.
+                start_s     REAL NOT NULL,
+                end_s       REAL NOT NULL,
+                source_seconds REAL NOT NULL,
+                -- start_s..end_s, already cut and decoded: mono 16-bit WAV, what
+                -- the reader pipes straight to aplay.
+                audio       BLOB NOT NULL,
+                seconds     REAL NOT NULL,   -- length of audio, = end_s - start_s
                 updated_at  TEXT NOT NULL,
                 PRIMARY KEY (employee_id, direction)
             );
@@ -190,6 +199,22 @@ def _drop_legacy_absent_profiles(conn) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(absent_profiles)")}
     if cols and "hours_map" not in cols:
         conn.execute("DROP TABLE absent_profiles")
+
+
+def _drop_legacy_employee_sounds(conn) -> None:
+    """Discard an employee_sounds table from either older layout.
+
+    Two have existed: one storing a fixed 5-second clip with no start/end, and
+    one that also kept a copy of the upload to re-trim from. Neither converts
+    into the current shape -- the first has no selection to report, and the
+    second's stored original is exactly what we no longer keep. CREATE TABLE IF
+    NOT EXISTS won't alter an existing table, so the old one is dropped here
+    (before that CREATE runs) and recreated empty. Custom sounds must be
+    uploaded again; nothing else references this table.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(employee_sounds)")}
+    if cols and ("start_s" not in cols or "source" in cols):
+        conn.execute("DROP TABLE employee_sounds")
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -470,28 +495,43 @@ def delete_employee(employee_id: int) -> None:
 
 # ── custom in/out sounds (per employee) ───────────────────────────────────────
 
+def _check_direction(direction: str) -> None:
+    """direction reaches here straight from a form field, and it goes into a
+    CHECK-constrained column -- catch it as a plain error rather than an
+    IntegrityError from three frames down."""
+    if direction not in ("in", "out"):
+        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
+
+
 def set_employee_sound(employee_id: int, direction: str, filename: str,
+                       start_s: float, end_s: float, source_seconds: float,
                        audio: bytes, seconds: float) -> None:
     """Store an employee's own clock-in/out sound, replacing any previous one.
 
-    ``audio`` must already be decoded to the format the reader plays -- see
-    buzzer.convert_to_wav, which is the only thing that should be producing it.
+    ``audio`` is the finished clip from buzzer.make_clip -- already cut to
+    start_s..end_s and decoded to the format the reader plays. The times are
+    stored alongside it purely so the UI can say which part was taken.
     """
-    if direction not in ("in", "out"):
-        raise ValueError(f"direction must be 'in' or 'out', got {direction!r}")
+    _check_direction(direction)
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO employee_sounds"
-            " (employee_id, direction, filename, audio, seconds, updated_at)"
-            " VALUES (?,?,?,?,?,?)"
+            " (employee_id, direction, filename, start_s, end_s, source_seconds,"
+            "  audio, seconds, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(employee_id, direction) DO UPDATE SET"
-            "   filename=excluded.filename, audio=excluded.audio,"
-            "   seconds=excluded.seconds, updated_at=excluded.updated_at",
-            (employee_id, direction, filename, audio, seconds, _now()))
+            "   filename=excluded.filename,"
+            "   start_s=excluded.start_s, end_s=excluded.end_s,"
+            "   source_seconds=excluded.source_seconds,"
+            "   audio=excluded.audio, seconds=excluded.seconds,"
+            "   updated_at=excluded.updated_at",
+            (employee_id, direction, filename, start_s, end_s, source_seconds,
+             audio, seconds, _now()))
 
 
 def clear_employee_sound(employee_id: int, direction: str) -> None:
     """Drop a custom sound; the employee goes back to the standard beep."""
+    _check_direction(direction)
     with get_conn() as conn:
         conn.execute("DELETE FROM employee_sounds WHERE employee_id=? AND direction=?",
                      (employee_id, direction))
@@ -499,7 +539,9 @@ def clear_employee_sound(employee_id: int, direction: str) -> None:
 
 def get_employee_sound(employee_id: int, direction: str):
     """The audio to play for this punch, or None to use the standard beep.
-    Called by the scan station on every recorded punch."""
+    Called by the scan station on every recorded punch, so it selects only the
+    clip -- never the much larger source blob."""
+    _check_direction(direction)
     with get_conn() as conn:
         return conn.execute(
             "SELECT audio, seconds, filename FROM employee_sounds"
@@ -508,12 +550,13 @@ def get_employee_sound(employee_id: int, direction: str):
 
 
 def list_employee_sounds(employee_id: int) -> dict:
-    """{'in': row, 'out': row} for the admin UI. Deliberately does not select
-    the blob -- the page only needs the name, length and date, and pulling
-    megabytes of audio into a template render would be pure waste."""
+    """{'in': row, 'out': row} for the admin UI. Deliberately selects no audio
+    -- the page only needs names, times and sizes, and pulling the clips into a
+    template render would be pure waste."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT direction, filename, seconds, updated_at, length(audio) AS bytes"
+            "SELECT direction, filename, seconds, start_s, end_s, source_seconds,"
+            "       updated_at, length(audio) AS bytes"
             " FROM employee_sounds WHERE employee_id=?", (employee_id,)).fetchall()
     return {r["direction"]: r for r in rows}
 
@@ -605,6 +648,36 @@ def set_special_day(date_str: str, kind: str, label: str = "") -> None:
 def remove_special_day(date_str: str) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM special_days WHERE date=?", (date_str,))
+
+
+def set_special_day_range(start: str, end: str, kind: str, label: str = "") -> int:
+    """Mark every day in the inclusive range start..end, e.g. a works holiday
+    or a shutdown week. kind is 'holiday', 'closed', or 'none' to clear.
+
+    Stored as one row per day rather than as a period: every other part of the
+    system asks "what is this date?", and a stored range would mean teaching all
+    of them about overlaps. Returns the number of days touched.
+    """
+    d0 = datetime.strptime(start, DATE_FMT).date()
+    d1 = datetime.strptime(end, DATE_FMT).date()
+    if d1 < d0:
+        d0, d1 = d1, d0
+    n = 0
+    with get_conn() as conn:
+        cur = d0
+        while cur <= d1:
+            ds = cur.strftime(DATE_FMT)
+            if kind == "none":
+                conn.execute("DELETE FROM special_days WHERE date=?", (ds,))
+            else:
+                conn.execute(
+                    "INSERT INTO special_days (date, kind, label) VALUES (?,?,?)"
+                    " ON CONFLICT(date) DO UPDATE SET"
+                    " kind=excluded.kind, label=excluded.label",
+                    (ds, kind, label))
+            n += 1
+            cur += timedelta(days=1)
+    return n
 
 
 def get_special_days(year: int, month: int) -> dict:
@@ -851,7 +924,7 @@ def _pair_day(times: list) -> tuple:
 
 DayRow = namedtuple(
     "DayRow",
-    "date weekday category in_time out_time pause_s worked_s supposed_s"
+    "date weekday category in_time out_time pause_s worked_s school_s supposed_s"
     " methods incomplete note")
 
 
@@ -914,6 +987,7 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
             incomplete = False  # nothing to complete on a day with no punches
 
         supposed_s = 0
+        school_s = 0        # credited school hours for this day, if any
         note = special["label"] if special else (absence["note"] if absence else "")
 
         if special and special["kind"] in ("holiday", "closed"):
@@ -934,12 +1008,13 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
                 totals["vacation_s"] += per_day_s
                 totals["vacation_days"] += 1
         elif scheduled_day and profile_hours.get(wd, 0) > 0:
-            # Absent profile (home office): this weekday's credit. Applies
-            # whether or not they scanned -- worked_s from any punches is added
-            # to the totals below, on top of this credit.
+            # School time: this weekday's credit. Applies whether or not they
+            # scanned -- worked_s from any punches is added to the totals below,
+            # on top of this credit.
             category = "profile"
+            school_s = profile_hours[wd] * 3600
             supposed_s = per_day_s
-            totals["profile_s"] += profile_hours[wd] * 3600
+            totals["profile_s"] += school_s
             totals["profile_days"] += 1
             note = note or profile_label
         elif scheduled_day:
@@ -959,7 +1034,7 @@ def month_summary(employee_id: int, year: int, month: int) -> dict:
             ds, WEEKDAY_NAMES[wd], category,
             first.strftime("%H:%M") if first else "",
             last.strftime("%H:%M") if last else "",
-            pause_s, worked_s, supposed_s, methods, incomplete, note))
+            pause_s, worked_s, school_s, supposed_s, methods, incomplete, note))
 
     # fulfilled = physically worked + credited vacation + credited profile days
     # (holidays/sick removed)

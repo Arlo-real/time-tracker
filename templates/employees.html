@@ -13,13 +13,16 @@
 {% for e in employees %}
 <div class="card">
   <div style="display:flex;align-items:center;gap:10px;">
-    <form method="post" style="display:inline-flex;gap:6px;">
-      <input type="hidden" name="action" value="rename">
-      <input type="hidden" name="id" value="{{ e['id'] }}">
-      <input name="name" value="{{ e['name'] }}">
-      <button class="ghost" type="submit">Rename</button>
-    </form>
+    <strong style="font-size:16px;">{{ e['name'] }}</strong>
     {% if not e['active'] %}<span class="pill off">inactive</span>{% endif %}
+    <form method="post" style="display:inline-flex;gap:6px;"
+          onsubmit="return confirm('Delete {{ e['name'] }}?\n\nThis permanently removes ALL their punches, chips and absences. It cannot be undone.');">
+      <input type="hidden" name="action" value="delete">
+      <input type="hidden" name="id" value="{{ e['id'] }}">
+      <input type="password" name="password" placeholder="admin password"
+             size="14" required autocomplete="off">
+      <button class="danger" type="submit">Delete</button>
+    </form>
     <span class="spacer" style="flex:1;"></span>
     {% set mt = month_totals[e['id']] %}
     <span class="muted" title="worked / planned this month">
@@ -36,19 +39,26 @@
 
   <div class="grid" style="margin-top:12px;">
     <div style="flex:1;min-width:260px;">
-      <div class="muted">NFC chips</div>
-      {% for c in chips[e['id']] %}
-        <form method="post" style="display:inline-flex;gap:4px;margin:2px 0;">
-          <input type="hidden" name="action" value="unchip">
-          <input type="hidden" name="serial" value="{{ c['serial'] }}">
-          <code>{{ c['serial'] }}</code>
-          <button class="danger" type="submit">✕</button>
-        </form><br>
-      {% endfor %}
+      <a class="btn" href="{{ url_for('employee_view', employee_id=e['id']) }}">More →</a>
+    </div>
+  </div>
+
+  <!-- NFC chips last: set once when someone joins, then never touched again -->
+  <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px;">
+    <div class="muted">NFC chips</div>
+    {% for c in chips[e['id']] %}
+      <form method="post" style="display:inline-flex;gap:4px;margin:2px 0;">
+        <input type="hidden" name="action" value="unchip">
+        <input type="hidden" name="serial" value="{{ c['serial'] }}">
+        <code>{{ c['serial'] }}</code>
+        <button class="danger" type="submit">✕</button>
+      </form><br>
+    {% endfor %}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px;">
       {% if pending_enroll and pending_enroll['employee_id'] == e['id'] %}
-        <div class="pill work" style="margin:4px 0;">
+        <span class="pill work">
           Waiting for a scan… tap an <strong>unassigned</strong> chip on the reader
-        </div>
+        </span>
         <form method="post" style="display:inline-flex;gap:6px;">
           <input type="hidden" name="action" value="cancel_enroll">
           <button class="ghost" type="submit">Cancel</button>
@@ -63,23 +73,11 @@
           </button>
         </form>
       {% endif %}
-      <form method="post" style="display:inline-flex;gap:6px;margin-top:4px;">
+      <form method="post" style="display:inline-flex;gap:6px;">
         <input type="hidden" name="action" value="chip">
         <input type="hidden" name="id" value="{{ e['id'] }}">
         <input name="serial" placeholder="or type serial/UID" size="14">
         <button class="ghost" type="submit">Link chip</button>
-      </form>
-    </div>
-    <div class="right" style="margin-left:auto;align-self:end;">
-      <a class="btn" href="{{ url_for('employee_view', employee_id=e['id']) }}">View month →</a>
-      <div class="muted" style="margin-top:10px;">Remove employee</div>
-      <form method="post" style="display:inline-flex;gap:6px;"
-            onsubmit="return confirm('Delete {{ e['name'] }}?\n\nThis permanently removes ALL their punches, chips and absences. It cannot be undone.');">
-        <input type="hidden" name="action" value="delete">
-        <input type="hidden" name="id" value="{{ e['id'] }}">
-        <input type="password" name="password" placeholder="admin password"
-               size="14" required autocomplete="off">
-        <button class="danger" type="submit">Delete</button>
       </form>
     </div>
   </div>
