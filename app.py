@@ -9,7 +9,7 @@ import io
 import csv
 import re
 import calendar
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import wraps
 
 from flask import (Flask, session, request, redirect, url_for,
@@ -25,9 +25,20 @@ db.init_db()
 # album before we get the chance to trim it.
 MAX_UPLOAD_MB = 16
 
+# Sign back in after this long without using the site. Idle, not absolute: the
+# cookie is reissued on every request, so an admin working through the afternoon
+# is never interrupted, while a browser left open on the shop floor stops being
+# a way in overnight.
+SESSION_HOURS = 12
+
 app = Flask(__name__)
 app.secret_key = db.get_secret_key()
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+app.permanent_session_lifetime = timedelta(hours=SESSION_HOURS)
+# The session cookie is the credential: keep it away from JavaScript and off
+# cross-site requests. Not marked Secure -- this is served over plain HTTP on
+# the LAN, and a Secure cookie would simply never be sent.
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
 WEEKDAYS = list(zip(range(7), db.WEEKDAY_NAMES))
 MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June",
@@ -74,6 +85,9 @@ def login():
     if request.method == "POST":
         if db.verify_admin(request.form.get("password", "")):
             session["admin"] = True
+            # permanent: without this the cookie carries no expiry at all and
+            # lasts as long as the browser feels like keeping it.
+            session.permanent = True
             nxt = request.args.get("next") or url_for("index")
             return redirect(nxt)
         flash("Wrong password.", "error")
@@ -481,8 +495,18 @@ def settings():
         if len(pw) < 4:
             flash("Password too short (min 4 chars).", "error")
         else:
-            db.set_admin_password(pw)
-            flash("Admin password changed.", "ok")
+            # Rotating the key invalidates every existing session -- including
+            # this one, so sign this browser back in with the new key before
+            # responding. Flask signs the cookie when the response is built, so
+            # swapping the key here means this reply already carries a valid one
+            # and whoever changed the password is not thrown out by their own
+            # action. Every other browser is.
+            app.secret_key = db.set_admin_password(pw)
+            session.clear()
+            session["admin"] = True
+            session.permanent = True
+            flash("Admin password changed. Any other signed-in browsers have "
+                  "been logged out.", "ok")
         return redirect(url_for("settings"))
     return render_template("settings.html")
 

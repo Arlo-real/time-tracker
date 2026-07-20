@@ -896,12 +896,29 @@ def verify_admin(password: str) -> bool:
     return salt is not None and _hash_pin(password, salt) == _config("admin_hash")
 
 
-def set_admin_password(password: str) -> None:
+def set_admin_password(password: str) -> str:
+    """Change the admin password and return the NEW session secret key.
+
+    The secret key is rotated in the same transaction, which is what actually
+    logs other browsers out. Sessions are signed cookies, not server-side state,
+    so their validity depends on the secret key and not on the password -- change
+    the password alone and anyone already signed in stays signed in forever.
+    That is the opposite of what "change the password" is meant to achieve, and
+    the reason someone changes it (a device lost, someone left) is exactly when
+    it matters.
+
+    One transaction so the two can never disagree: a new password with the old
+    key would leave stale sessions alive, and the caller must be handed the key
+    it has to start signing with.
+    """
     salt = secrets.token_hex(16)
+    key = secrets.token_hex(32)
     with get_conn() as conn:
         conn.execute("UPDATE admin_config SET value=? WHERE key='admin_salt'", (salt,))
         conn.execute("UPDATE admin_config SET value=? WHERE key='admin_hash'",
                      (_hash_pin(password, salt),))
+        conn.execute("UPDATE admin_config SET value=? WHERE key='secret_key'", (key,))
+    return key
 
 
 def get_secret_key() -> str:
