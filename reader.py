@@ -19,6 +19,7 @@ the device name (e.g. 'RFID'). READER_GRAB=0 disables grabbing.
 
 import os
 import sys
+import time
 
 # keycode -> character. Only hex digits are meaningful; everything else is
 # ignored. Letters are upper-cased (db normalises anyway, but keep it tidy).
@@ -63,38 +64,76 @@ def _resolve_device(hint):
     return devices[0]
 
 
+def _grab(dev, grab):
+    if grab:
+        try:
+            dev.grab()  # take exclusive control so scans don't reach the console
+        except Exception as e:
+            print(f"[reader] could not grab {dev.name}: {e}", file=sys.stderr)
+
+
+def _wait_for_device(hint, grab):
+    """Block until a matching reader is present again, then return it opened.
+
+    Used after an unplug/USB reset. Retries quietly forever -- a scan station
+    with no reader has nothing else to do but wait for it to come back."""
+    announced = False
+    while True:
+        try:
+            dev = _resolve_device(hint)
+        except Exception:
+            if not announced:
+                print("[reader] waiting for the reader to be plugged back in...",
+                      file=sys.stderr)
+                announced = True
+            time.sleep(1.0)
+            continue
+        _grab(dev, grab)
+        print(f"[reader] reader reconnected: {dev.name} ({dev.path})",
+              file=sys.stderr)
+        return dev
+
+
 def _iter_evdev(hint, grab):
     from evdev import categorize, ecodes
+    # First open may fail (no reader, no evdev access): let it propagate so
+    # read_uuids can fall back to stdin in auto mode. Once we have opened the
+    # device once, a later disappearance is an unplug, not a config problem --
+    # from then on we reconnect instead of giving up.
     dev = _resolve_device(hint)
+    _grab(dev, grab)
     print(f"[reader] using evdev device: {dev.name} ({dev.path})", file=sys.stderr)
-    if grab:
-        dev.grab()  # take exclusive control so scans don't reach the console
-    try:
-        buf = []
-        for event in dev.read_loop():
-            if event.type != ecodes.EV_KEY:
-                continue
-            data = categorize(event)
-            if data.keystate != data.key_down:  # only on press
-                continue
-            key = data.keycode
-            if isinstance(key, (list, tuple)):
-                key = key[0]
-            if key in _ENTER_KEYS:
-                s = "".join(buf)
-                buf = []
-                if s:
-                    yield s
-            else:
-                ch = _KEYMAP.get(key)
-                if ch:
-                    buf.append(ch)
-    finally:
-        if grab:
+    while True:
+        try:
+            buf = []
+            for event in dev.read_loop():
+                if event.type != ecodes.EV_KEY:
+                    continue
+                data = categorize(event)
+                if data.keystate != data.key_down:  # only on press
+                    continue
+                key = data.keycode
+                if isinstance(key, (list, tuple)):
+                    key = key[0]
+                if key in _ENTER_KEYS:
+                    s = "".join(buf)
+                    buf = []
+                    if s:
+                        yield s
+                else:
+                    ch = _KEYMAP.get(key)
+                    if ch:
+                        buf.append(ch)
+        except OSError as e:
+            # Reader unplugged or the USB port reset: read_loop raises (ENODEV).
+            # A half-typed UUID in buf is dropped -- reconnect and start clean.
+            print(f"[reader] reader disconnected ({e})", file=sys.stderr)
+        finally:
             try:
                 dev.ungrab()
             except Exception:
                 pass
+        dev = _wait_for_device(hint, grab)
 
 
 def read_uuids(mode=None, device=None, grab=None):
