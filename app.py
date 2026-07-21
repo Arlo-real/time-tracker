@@ -80,6 +80,22 @@ app.jinja_env.globals.update(MONTH_NAMES=MONTH_NAMES, WEEKDAYS=WEEKDAYS)
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 
+def _safe_next(nxt):
+    """Where to land after login. Only a local path that actually resolves to a
+    route is honoured: a stale 'next' (a deleted page, an old bookmark) would
+    otherwise drop the admin on a 404 right after signing in, and an absolute
+    or protocol-relative URL would be an open redirect off the site. Anything
+    that fails either test falls back to the home page."""
+    if not nxt or not nxt.startswith("/") or nxt.startswith("//"):
+        return url_for("index")
+    try:
+        # match against the URL map; raises if no route serves this path
+        app.url_map.bind("").match(nxt.split("?", 1)[0], method="GET")
+    except Exception:
+        return url_for("index")
+    return nxt
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -88,8 +104,7 @@ def login():
             # permanent: without this the cookie carries no expiry at all and
             # lasts as long as the browser feels like keeping it.
             session.permanent = True
-            nxt = request.args.get("next") or url_for("index")
-            return redirect(nxt)
+            return redirect(_safe_next(request.args.get("next")))
         flash("Wrong password.", "error")
     return render_template("login.html")
 
