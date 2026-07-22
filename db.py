@@ -925,6 +925,82 @@ def get_secret_key() -> str:
     return _config("secret_key")
 
 
+# ── backup / restore ──────────────────────────────────────────────────────────
+#
+# These back the "Back up / Restore" buttons in the admin site. They are the
+# same idea as backup.py's USB-stick backups, but driven from the browser: the
+# admin downloads a consistent snapshot, or uploads one to replace the live DB.
+
+def snapshot_to(dest: str) -> None:
+    """Write a consistent copy of the live database to `dest`, then verify it.
+
+    Uses VACUUM INTO so a snapshot can be taken while the scan station has the
+    WAL database open -- a plain file copy of a live WAL DB is torn. Raises if
+    the result does not open or fails integrity_check, so a caller that returns
+    without an exception is handing out a file it has actually checked.
+    """
+    if os.path.exists(dest):
+        os.remove(dest)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("VACUUM INTO ?", (dest,))
+    finally:
+        conn.close()
+
+    check = sqlite3.connect(dest)
+    try:
+        res = check.execute("PRAGMA integrity_check").fetchone()[0]
+        if res != "ok":
+            raise RuntimeError(f"integrity_check said: {res}")
+        # the tables we care about must be readable
+        check.execute("SELECT COUNT(*) FROM punches").fetchone()
+        check.execute("SELECT COUNT(*) FROM employees").fetchone()
+    finally:
+        check.close()
+
+
+def inspect_backup(path: str) -> dict:
+    """Confirm `path` is a usable time-tracker database, returning its counts.
+
+    Raises if it is not a valid SQLite file, fails integrity_check, or lacks the
+    tables this application needs -- so restore can refuse before touching the
+    live database.
+    """
+    check = sqlite3.connect(path)
+    try:
+        if check.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise RuntimeError("integrity_check failed")
+        emps = check.execute("SELECT COUNT(*) FROM employees").fetchone()[0]
+        punches = check.execute("SELECT COUNT(*) FROM punches").fetchone()[0]
+    finally:
+        check.close()
+    return {"employees": emps, "punches": punches}
+
+
+def restore_from(src: str) -> str:
+    """Replace the live database with the verified file at `src`.
+
+    The caller must have run inspect_backup(src) first. The current database is
+    moved aside to attendance.db.replaced-<stamp> rather than deleted, so a
+    mistaken restore is recoverable, and the stale WAL/SHM sidecars are removed
+    (they belong to the database we just moved away, not the new one). Returns
+    the path the previous database was kept at, or "" if there was none.
+    """
+    import shutil
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    kept = ""
+    if os.path.exists(DB_PATH):
+        kept = f"{DB_PATH}.replaced-{stamp}"
+        shutil.move(DB_PATH, kept)
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.remove(DB_PATH + suffix)
+        except OSError:
+            pass
+    shutil.copyfile(src, DB_PATH)
+    return kept
+
+
 # ── monthly summary (the heart of the admin view) ─────────────────────────────
 
 def _pair_day(times: list) -> tuple:

@@ -9,4 +9,24 @@
     <button type="submit">Change password</button>
   </form>
 </div>
+
+<div class="card" style="max-width:420px;">
+  <h2>Database</h2>
+
+  <p class="muted">Download a snapshot of the database to keep somewhere safe.
+    It is a single file you can restore below.</p>
+  <p><a class="btn" href="{{ url_for('backup_download') }}">Back up database</a></p>
+
+  <h2 style="margin-top:18px;">Restore a backup</h2>
+  <p class="muted">Replacing the database wipes all current employees, punches
+    and settings and puts the backup in their place. The database being replaced
+    is kept on the Pi so a mistake can be undone.</p>
+  <form method="post" action="{{ url_for('backup_restore') }}"
+        enctype="multipart/form-data"
+        onsubmit="return confirm('Replace the live database with this backup? All current data will be overwritten.');">
+    <p><input name="backup" type="file" accept=".db" required style="width:100%"></p>
+    <p><input name="password" type="password" placeholder="Admin password" required style="width:100%"></p>
+    <button type="submit" class="danger">Restore backup</button>
+  </form>
+</div>
 {% endblock %}

@@ -3,27 +3,27 @@
 Server-rendered Flask app, protected by a single admin password. Runs on the Pi
 alongside the reader. Start with:  python3 app.py   (default http://0.0.0.0:8080)
 Default password is 'admin' -- change it under Settings on first login.
+
+If the password is forgotten, reset it from the Pi itself:
+    python3 app.py --reset-password
 """
 
 import io
+import os
 import csv
 import re
 import calendar
+import tempfile
 from datetime import date, datetime, timedelta
 from functools import wraps
 
 from flask import (Flask, session, request, redirect, url_for,
-                   render_template, flash, abort, Response)
+                   render_template, flash, abort, Response, send_file)
 
 import buzzer
 import db
 
 db.init_db()
-
-# Uploaded sounds are cut to a few seconds and re-encoded, so the stored audio
-# is small whatever arrives. This cap only stops someone feeding the Pi a whole
-# album before we get the chance to trim it.
-MAX_UPLOAD_MB = 16
 
 # Sign back in after this long without using the site. Idle, not absolute: the
 # cookie is reissued on every request, so an admin working through the afternoon
@@ -31,9 +31,11 @@ MAX_UPLOAD_MB = 16
 # a way in overnight.
 SESSION_HOURS = 12
 
+# Shortest admin password accepted, by the web UI and the CLI reset alike.
+MIN_PASSWORD_LEN = 4
+
 app = Flask(__name__)
 app.secret_key = db.get_secret_key()
-app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 app.permanent_session_lifetime = timedelta(hours=SESSION_HOURS)
 # The session cookie is the credential: keep it away from JavaScript and off
 # cross-site requests. Not marked Secure -- this is served over plain HTTP on
@@ -325,16 +327,6 @@ def sound_preview(employee_id, direction):
     return Response(row["audio"], mimetype="audio/wav")
 
 
-@app.errorhandler(413)
-def too_large(e):
-    """Flask aborts oversized uploads before our route runs, so the friendly
-    message has to happen here."""
-    flash(f"That file is too big (limit {MAX_UPLOAD_MB} MB). "
-          f"At most {buzzer.MAX_CLIP_SECONDS:g}s of it is used anyway "
-          f"— try a shorter file.", "error")
-    return redirect(request.referrer or url_for("index"))
-
-
 @app.route("/employee/<int:employee_id>/absence", methods=["POST"])
 @login_required
 def set_absence(employee_id):
@@ -518,8 +510,8 @@ def employees():
 def settings():
     if request.method == "POST":
         pw = request.form.get("password", "")
-        if len(pw) < 4:
-            flash("Password too short (min 4 chars).", "error")
+        if len(pw) < MIN_PASSWORD_LEN:
+            flash(f"Password too short (min {MIN_PASSWORD_LEN} chars).", "error")
         else:
             # Rotating the key invalidates every existing session -- including
             # this one, so sign this browser back in with the new key before
@@ -535,6 +527,88 @@ def settings():
                   "been logged out.", "ok")
         return redirect(url_for("settings"))
     return render_template("settings.html")
+
+
+# ── backup / restore ──────────────────────────────────────────────────────────
+#
+# Backup hands the admin a consistent snapshot of the live database to keep off
+# the Pi. Restore takes such a file back and makes it the live database. This is
+# the browser-driven counterpart to the automatic USB-stick backups (backup.py).
+
+@app.route("/settings/backup")
+@login_required
+def backup_download():
+    """Send a consistent snapshot of the database as a download.
+
+    The snapshot is taken to a temp file (VACUUM INTO needs a path), then read
+    into memory and the temp file removed at once, so a copy of everyone's hours
+    is never left lying in /tmp regardless of how the response is served.
+    """
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    tmp = os.path.join(tempfile.gettempdir(), f"tt-download-{stamp}.db")
+    try:
+        db.snapshot_to(tmp)
+        with open(tmp, "rb") as f:
+            data = f.read()
+    except Exception as e:
+        flash(f"Could not create a backup: {e}", "error")
+        return redirect(url_for("settings"))
+    finally:
+        _quiet_remove(tmp)
+    return send_file(io.BytesIO(data), as_attachment=True,
+                     download_name=f"attendance-{stamp}.db",
+                     mimetype="application/octet-stream")
+
+
+@app.route("/settings/restore", methods=["POST"])
+@login_required
+def backup_restore():
+    """Replace the live database with an uploaded backup file.
+
+    Re-checks the admin password (this wipes the current data) and verifies the
+    uploaded file with integrity_check before swapping anything, so a corrupt or
+    unrelated file can never land as the live database.
+    """
+    if not db.verify_admin(request.form.get("password", "")):
+        flash("Wrong password; database not restored.", "error")
+        return redirect(url_for("settings"))
+
+    upload = request.files.get("backup")
+    if upload is None or not upload.filename:
+        flash("No backup file chosen.", "error")
+        return redirect(url_for("settings"))
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    staged = os.path.join(tempfile.gettempdir(), f"tt-upload-{stamp}.db")
+    try:
+        upload.save(staged)
+        info = db.inspect_backup(staged)
+    except Exception as e:
+        _quiet_remove(staged)
+        flash(f"That file is not a usable backup ({e}); nothing changed.", "error")
+        return redirect(url_for("settings"))
+
+    try:
+        kept = db.restore_from(staged)
+    except Exception as e:
+        flash(f"Restore failed: {e}", "error")
+        return redirect(url_for("settings"))
+    finally:
+        _quiet_remove(staged)
+
+    msg = (f"Database restored ({info['employees']} employees, "
+           f"{info['punches']} punches).")
+    if kept:
+        msg += f" The previous database was kept on the Pi at {kept}."
+    flash(msg, "ok")
+    return redirect(url_for("settings"))
+
+
+def _quiet_remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 # ── per-employee monthly CSV ──────────────────────────────────────────────────
@@ -589,7 +663,46 @@ def export_employee_month(employee_id):
                     headers={"Content-Disposition": f'attachment; filename="{fn}"'})
 
 
+def reset_password_cli(argv) -> int:
+    """Set the admin password from the command line.
+
+    For when the password has been forgotten and the web UI can't be reached:
+    run on the Pi itself (it writes straight to the database). Rotating the key
+    inside set_admin_password logs out every browser, so a lost or leaked old
+    password stops being a way in the moment this runs.
+
+    Usage:
+        python3 app.py --reset-password              # prompt (hidden), twice
+        python3 app.py --reset-password NEWPASSWORD  # non-interactive
+    """
+    import getpass
+
+    if len(argv) > 2:
+        pw = argv[2]
+    else:
+        try:
+            pw = getpass.getpass("New admin password: ")
+            if getpass.getpass("Repeat new password: ") != pw:
+                print("Passwords did not match; nothing changed.")
+                return 1
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled; nothing changed.")
+            return 1
+
+    if len(pw) < MIN_PASSWORD_LEN:
+        print(f"Password too short (min {MIN_PASSWORD_LEN} chars); nothing changed.")
+        return 1
+
+    db.set_admin_password(pw)
+    print("Admin password changed. Any signed-in browsers have been logged out.")
+    return 0
+
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--reset-password":
+        sys.exit(reset_password_cli(sys.argv))
+
     host, port = "0.0.0.0", 8080
     try:
         from waitress import serve
