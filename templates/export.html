@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Export{% endblock %}
+{% block body %}
+<div class="card">
+  <h1>Export</h1>
+  {% if not employees %}
+    <p class="muted">No employees yet — nothing to export.</p>
+  {% else %}
+  <div class="grid" style="align-items:center;">
+    <div class="right" style="flex:1;">
+      <a class="btn ghost" href="?year={{ prev_y }}&month={{ prev_m }}">← Prev</a>
+      <strong style="margin:0 10px;">{{ MONTH_NAMES[month] }} {{ year }}</strong>
+      <a class="btn ghost" href="?year={{ next_y }}&month={{ next_m }}">Next →</a>
+    </div>
+  </div>
+  <p class="muted" style="font-size:13px;margin-top:10px;">
+    Covers all {{ employees|length }} employee(s). "Summary" is one row each;
+    "Detailed" is a ZIP with a full day-by-day CSV per person.</p>
+  {% endif %}
+</div>
+
+{% if employees %}
+<div class="grid">
+  <div class="card">
+    <h2>This month — {{ MONTH_NAMES[month] }} {{ year }}</h2>
+    <p><a class="btn" href="{{ url_for('export_all_month', year=year, month=month) }}">
+      Summary CSV (all employees)</a></p>
+    <p><a class="btn ghost" href="{{ url_for('export_detailed_month', year=year, month=month) }}">
+      Detailed ZIP (one CSV each)</a></p>
+  </div>
+
+  <div class="card">
+    <h2>Whole year — {{ year }}</h2>
+    <p><a class="btn" href="{{ url_for('export_all_year', year=year) }}">
+      Summary CSV (every month)</a></p>
+    <p><a class="btn ghost" href="{{ url_for('export_detailed_year', year=year) }}">
+      Detailed ZIP (every month)</a></p>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

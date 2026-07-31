@@ -62,11 +62,12 @@ apt-get update
 apt-get install -y python3 python3-flask python3-waitress python3-evdev
 # alsa-utils provides 'aplay', used to sound the buzzer on the audio jack.
 apt-get install -y alsa-utils
-# ffmpeg converts custom per-employee scan sounds uploaded from the admin site
-# (any format in -> the one format the reader plays). Without it, uploads are
-# refused with a message saying so; everything else still works.
+# ffmpeg converts custom scan sounds uploaded from the admin site -- both the
+# per-employee ones and the company defaults in Settings (any format in -> the
+# one format the reader plays). Without it, uploads are refused with a message
+# saying so; everything else still works.
 apt-get install -y ffmpeg || \
-  echo "!! ffmpeg missing; custom per-employee scan sounds can't be uploaded."
+  echo "!! ffmpeg missing; custom scan sounds can't be uploaded."
 # Mount helpers so a backup stick works whatever it is formatted with:
 # NTFS (Windows-formatted), exFAT (big sticks), FAT32. ext4 needs nothing.
 apt-get install -y ntfs-3g exfatprogs dosfstools || \

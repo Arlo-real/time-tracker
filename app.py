@@ -14,6 +14,7 @@ import csv
 import re
 import calendar
 import tempfile
+import zipfile
 from datetime import date, datetime, timedelta
 from functools import wraps
 
@@ -509,6 +510,10 @@ def employees():
 @login_required
 def settings():
     if request.method == "POST":
+        # The default-sound forms carry a 'direction'; the password form does
+        # not. Branch on that so both can live on one Settings page.
+        if "direction" in request.form:
+            return _set_default_sound()
         pw = request.form.get("password", "")
         if len(pw) < MIN_PASSWORD_LEN:
             flash(f"Password too short (min {MIN_PASSWORD_LEN} chars).", "error")
@@ -526,7 +531,64 @@ def settings():
             flash("Admin password changed. Any other signed-in browsers have "
                   "been logged out.", "ok")
         return redirect(url_for("settings"))
-    return render_template("settings.html")
+    return render_template("settings.html",
+                           default_sounds=db.list_default_sounds(),
+                           max_clip_seconds=buzzer.MAX_CLIP_SECONDS)
+
+
+def _set_default_sound():
+    """Upload, re-trim, or clear a company-wide default clock-in/out sound.
+
+    Same handling as an employee's own sound (see set_sound) -- the only
+    difference is there is no employee, the clip is the fallback for everyone."""
+    direction = request.form.get("direction", "")
+    if direction not in ("in", "out"):
+        abort(400)
+    word = _sound_word(direction)
+    back = redirect(url_for("settings") + "#sounds")
+
+    if request.form.get("action") == "clear":
+        db.clear_default_sound(direction)
+        flash(f"Default {word} sound removed — back to the standard beep.", "ok")
+        return back
+
+    f = request.files.get("sound")
+    if f is None or not f.filename:
+        flash("Pick an audio file first.", "error")
+        return back
+    try:
+        start = _seconds_field(request.form, "start_s", default=0.0)
+        end = _seconds_field(request.form, "end_s", default=None)
+    except ValueError:
+        flash("Start and end have to be numbers, in seconds (or left empty).",
+              "error")
+        return back
+    try:
+        wav, seconds, source_seconds = buzzer.make_clip(f.read(), start, end)
+    except buzzer.SoundError as e:
+        flash(str(e), "error")
+        return back
+
+    end = start + seconds
+    db.set_default_sound(direction, f.filename, start, end, source_seconds,
+                         wav, seconds)
+    msg = f"Default {word} sound saved: {f.filename} — plays {seconds:.1f}s"
+    if seconds < source_seconds - 0.05:
+        msg += f" ({start:.2f}s–{end:.2f}s of {source_seconds:.1f}s)"
+    flash(msg + ".", "ok")
+    return back
+
+
+@app.route("/settings/sound/<direction>.wav")
+@login_required
+def default_sound_preview(direction):
+    """The default clip as the reader will play it."""
+    if direction not in ("in", "out"):
+        abort(404)
+    row = db.get_default_sound(direction)
+    if row is None:
+        abort(404)
+    return Response(row["audio"], mimetype="audio/wav")
 
 
 # ── backup / restore ──────────────────────────────────────────────────────────
@@ -629,6 +691,13 @@ def _safe(name):
     return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "employee"
 
 
+def _category_label(category):
+    """What a day's type is called in exports. The internal category stays
+    'profile' (and so does the CSS class), but everywhere a person reads it --
+    the pages and these files -- it says 'school'."""
+    return "school" if category == "profile" else category
+
+
 def _detail_csv(emp, year, month):
     """Full daily breakdown for one employee/month as CSV text."""
     s = db.month_summary(emp["id"], year, month)
@@ -638,7 +707,8 @@ def _detail_csv(emp, year, month):
     w.writerow([f"{emp['name']} - {MONTH_NAMES[month]} {year}"])
     w.writerow(DETAIL_HEADER)
     for r in s["rows"]:
-        w.writerow([r.date, r.weekday, r.category, r.in_time, r.out_time,
+        w.writerow([r.date, r.weekday, _category_label(r.category),
+                    r.in_time, r.out_time,
                     _h(r.pause_s), _h(r.worked_s), _h(r.school_s),
                     _h(r.supposed_s), " ".join(r.methods), r.note])
     w.writerow([])
@@ -661,6 +731,95 @@ def export_employee_month(employee_id):
     fn = f"{_safe(emp['name'])}_{year}-{month:02d}.csv"
     return Response(text, mimetype="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+# ── whole-company exports ─────────────────────────────────────────────────────
+#
+# One summary row per employee (a month, or a whole year), and a ZIP of the
+# per-employee detailed CSVs. The detailed files reuse _detail_csv above, so the
+# column list -- School included -- is defined in exactly one place.
+
+SUMMARY_HEADER = ["Employee", "Year", "Month", "Worked h", "School h",
+                  "Vacation h", "Sick h", "Supposed h", "Balance h",
+                  "Worked days", "Supposed days", "Holiday days", "Closed days"]
+
+
+def _summary_row(emp, year, month):
+    t = db.month_summary(emp["id"], year, month)["totals"]
+    return [emp["name"], year, month, _h(t["worked_s"]), _h(t["profile_s"]),
+            _h(t["vacation_s"]), _h(t["sick_s"]), _h(t["supposed_s"]),
+            _h(t["balance_s"]), t["worked_days"], t["supposed_days"],
+            t["holiday_days"], t["closed_days"]]
+
+
+def _csv_response(header, rows, filename):
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(header)
+    w.writerows(rows)
+    return Response(buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+def _zip_response(files, filename):
+    """files: list of (name_in_zip, text). Built in memory -- these are small."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, text in files:
+            z.writestr(name, text)
+    return Response(buf.getvalue(), mimetype="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.route("/export")
+@login_required
+def export_page():
+    year, month = month_arg()
+    prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
+    next_y, next_m = (year + 1, 1) if month == 12 else (year, month + 1)
+    return render_template("export.html", year=year, month=month,
+                           prev_y=prev_y, prev_m=prev_m, next_y=next_y, next_m=next_m,
+                           employees=db.list_employees())
+
+
+@app.route("/export/month.csv")
+@login_required
+def export_all_month():
+    """One summary row per employee for the month."""
+    year, month = month_arg()
+    rows = [_summary_row(e, year, month) for e in db.list_employees()]
+    return _csv_response(SUMMARY_HEADER, rows, f"summary_{year}-{month:02d}.csv")
+
+
+@app.route("/export/year.csv")
+@login_required
+def export_all_year():
+    """One summary row per employee per month for the whole year."""
+    year, _ = month_arg()
+    rows = [_summary_row(e, year, m)
+            for e in db.list_employees() for m in range(1, 13)]
+    return _csv_response(SUMMARY_HEADER, rows, f"summary_{year}.csv")
+
+
+@app.route("/export/detailed-month.zip")
+@login_required
+def export_detailed_month():
+    """A folder of per-employee detailed CSVs for the month, zipped."""
+    year, month = month_arg()
+    files = [(f"{_safe(e['name'])}_{year}-{month:02d}.csv",
+              _detail_csv(e, year, month)) for e in db.list_employees()]
+    return _zip_response(files, f"detailed_{year}-{month:02d}.zip")
+
+
+@app.route("/export/detailed-year.zip")
+@login_required
+def export_detailed_year():
+    """Per-employee detailed CSVs for every month of the year, zipped, one
+    subfolder per month."""
+    year, _ = month_arg()
+    files = [(f"{year}-{m:02d}/{_safe(e['name'])}.csv", _detail_csv(e, year, m))
+             for m in range(1, 13) for e in db.list_employees()]
+    return _zip_response(files, f"detailed_{year}.zip")
 
 
 def reset_password_cli(argv) -> int:

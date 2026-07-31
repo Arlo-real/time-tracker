@@ -171,6 +171,21 @@ def init_db():
                 updated_at  TEXT NOT NULL,
                 PRIMARY KEY (employee_id, direction)
             );
+            -- Company-wide fallback sounds: played when an employee has no sound
+            -- of their own for that direction. Same shape as employee_sounds
+            -- minus the employee_id -- one 'in' and one 'out' for everybody.
+            -- Stored in the database for the same reason (it rides along in the
+            -- one backup file).
+            CREATE TABLE IF NOT EXISTS default_sounds (
+                direction   TEXT PRIMARY KEY CHECK (direction IN ('in','out')),
+                filename    TEXT NOT NULL,
+                start_s     REAL NOT NULL,
+                end_s       REAL NOT NULL,
+                source_seconds REAL NOT NULL,
+                audio       BLOB NOT NULL,
+                seconds     REAL NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS admin_config (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -558,6 +573,58 @@ def list_employee_sounds(employee_id: int) -> dict:
             "SELECT direction, filename, seconds, start_s, end_s, source_seconds,"
             "       updated_at, length(audio) AS bytes"
             " FROM employee_sounds WHERE employee_id=?", (employee_id,)).fetchall()
+    return {r["direction"]: r for r in rows}
+
+
+# ── company-wide default in/out sounds ────────────────────────────────────────
+#
+# The fallback an employee gets when they have no sound of their own. Same clip
+# format as employee_sounds, so buzzer.make_clip produces both and the reader
+# plays both the same way.
+
+def set_default_sound(direction: str, filename: str, start_s: float, end_s: float,
+                      source_seconds: float, audio: bytes, seconds: float) -> None:
+    """Store the company default clock-in/out sound, replacing any previous one."""
+    _check_direction(direction)
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO default_sounds"
+            " (direction, filename, start_s, end_s, source_seconds,"
+            "  audio, seconds, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(direction) DO UPDATE SET"
+            "   filename=excluded.filename,"
+            "   start_s=excluded.start_s, end_s=excluded.end_s,"
+            "   source_seconds=excluded.source_seconds,"
+            "   audio=excluded.audio, seconds=excluded.seconds,"
+            "   updated_at=excluded.updated_at",
+            (direction, filename, start_s, end_s, source_seconds,
+             audio, seconds, _now()))
+
+
+def clear_default_sound(direction: str) -> None:
+    """Drop the company default; that direction goes back to the standard beep."""
+    _check_direction(direction)
+    with get_conn() as conn:
+        conn.execute("DELETE FROM default_sounds WHERE direction=?", (direction,))
+
+
+def get_default_sound(direction: str):
+    """The default clip for this direction, or None. Called by the scan station
+    when the employee has no sound of their own, so it selects only the clip."""
+    _check_direction(direction)
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT audio, seconds, filename FROM default_sounds WHERE direction=?",
+            (direction,)).fetchone()
+
+
+def list_default_sounds() -> dict:
+    """{'in': row, 'out': row} for the Settings UI, without the audio blob."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT direction, filename, seconds, start_s, end_s, source_seconds,"
+            "       updated_at, length(audio) AS bytes FROM default_sounds").fetchall()
     return {r["direction"]: r for r in rows}
 
 

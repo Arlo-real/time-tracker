@@ -10,6 +10,69 @@
   </form>
 </div>
 
+<div class="card" id="sounds" style="max-width:560px;">
+  <h2>Default scan sounds</h2>
+  <p class="muted" style="font-size:13px;">Played at the reader for everyone who
+    has no sound of their own. An individual's sound (set on their page) always
+    wins; if neither exists, the standard beep plays. Upload any audio file
+    (MP3, WAV, OGG, M4A…). Leave start and end empty to use the whole file, or
+    set them to play just one part — up to {{ '%g'|format(max_clip_seconds) }}s.
+    The volume is levelled automatically.</p>
+
+  {% for direction, word in [('in', 'Welcome (clock in)'), ('out', 'Leaving (clock out)')] %}
+    {% set s = default_sounds.get(direction) %}
+    <div style="border-top:1px solid var(--line);padding-top:12px;margin-top:12px;">
+      <div><strong>{{ word }}</strong></div>
+
+      {% if s %}
+        <div class="muted" style="font-size:13px;margin:4px 0;">
+          {{ s['filename'] }} · {{ '%.1f'|format(s['seconds']) }}s
+          {%- if s['seconds'] < s['source_seconds'] - 0.05 %}
+            ({{ '%.2f'|format(s['start_s']) }}s–{{ '%.2f'|format(s['end_s']) }}s
+            of {{ '%.1f'|format(s['source_seconds']) }}s)
+          {%- else %} (whole file){% endif %} ·
+          {{ (s['bytes'] / 1024)|round|int }} KB · {{ s['updated_at'][:10] }}
+        </div>
+        <audio controls preload="none" style="width:100%;max-width:340px;"
+               src="{{ url_for('default_sound_preview', direction=direction) }}"></audio>
+        <form method="post" action="{{ url_for('settings') }}"
+              style="display:inline-flex;gap:6px;margin-top:6px;">
+          <input type="hidden" name="direction" value="{{ direction }}">
+          <input type="hidden" name="action" value="clear">
+          <button class="danger" type="submit">Remove</button>
+        </form>
+      {% else %}
+        <div class="muted" style="font-size:13px;margin:4px 0;">
+          Standard beep — no default sound.</div>
+      {% endif %}
+
+      <form method="post" enctype="multipart/form-data"
+            action="{{ url_for('settings') }}" style="margin-top:10px;">
+        <input type="hidden" name="direction" value="{{ direction }}">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+          <div>
+            <label class="muted">Audio file</label><br>
+            <input type="file" name="sound" accept="audio/*" required>
+          </div>
+          <div style="display:flex;gap:8px;align-items:end;flex:none;">
+            <div>
+              <label class="muted">Start (s)</label><br>
+              <input name="start_s" type="number" step="0.01" min="0"
+                     placeholder="0" style="width:84px;">
+            </div>
+            <div>
+              <label class="muted">End (s)</label><br>
+              <input name="end_s" type="number" step="0.01" min="0"
+                     placeholder="end" style="width:84px;">
+            </div>
+          </div>
+          <button class="ghost" type="submit">{{ 'Replace' if s else 'Upload' }}</button>
+        </div>
+      </form>
+    </div>
+  {% endfor %}
+</div>
+
 <div class="card" style="max-width:420px;">
   <h2>Database</h2>
 

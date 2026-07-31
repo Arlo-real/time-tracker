@@ -49,15 +49,17 @@ def _clock_watchdog():
 
 
 def _confirm(res):
-    """Sound the confirmation for a stored punch: the employee's own sound if
-    they have one, otherwise the standard in/out beep.
+    """Sound the confirmation for a stored punch, trying in order: the employee's
+    own sound, then the company default, then the standard in/out beep.
 
-    Falls back to the beep whenever the custom sound doesn't play. That sound is
-    the employee's only evidence the punch was stored, so a bad clip must cost
-    them their nice noise -- never their confirmation.
+    Each step falls through to the next whenever the sound doesn't play. That
+    confirmation is the employee's only evidence the punch was stored, so a bad
+    clip must cost them their nice noise -- never their confirmation, which is
+    why the plain beep is always the last resort.
     """
     try:
-        snd = db.get_employee_sound(res.employee_id, res.direction)
+        snd = (db.get_employee_sound(res.employee_id, res.direction)
+               or db.get_default_sound(res.direction))
         if snd is not None and buzzer.play_wav(snd["audio"], snd["seconds"]):
             return
     except Exception as e:
